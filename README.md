@@ -1,5 +1,6 @@
 # InvokeAI_DemoFusion
-InvokeAI Nodes implementation of the DemoFusion paper
+InvokeAI Nodes implementation of the DemoFusion paper.  
+Original source: https://ruoyidu.github.io/demofusion/demofusion.html  
 
 ## Planning  
 1. Runable Example code from nodes interface  
