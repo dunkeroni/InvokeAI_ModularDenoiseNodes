@@ -1,0 +1,2 @@
+from .DemoFusion_Invocations import DemoFusionAllInOneInvocation
+#from .DirtyRottenCheater import DirtyRottenCheater
