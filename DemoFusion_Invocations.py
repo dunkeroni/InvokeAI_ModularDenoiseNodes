@@ -200,7 +200,7 @@ class DemoFusionAllInOneInvocation(BaseInvocation):
     guidance_scale: float = InputField(
         title="Guidance Scale",
         description="The guidance scale.",
-        default=7.5,
+        default=5,
     )
     cosine_scale_1: float = InputField(
         title="Cosine Scale 1",
