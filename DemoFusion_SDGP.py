@@ -320,6 +320,28 @@ class DF_StableDiffusionGeneratorPipeline(StableDiffusionGeneratorPipeline):
             total_noise_pred = pred_multi
         elif do_dilated_sampling:
             total_noise_pred = total_noise_pred
+        else: #normal diffusion pipeline
+            uc_noise_pred, c_noise_pred = self.invokeai_diffuser.do_unet_step(
+                sample=latent_model_input,
+                timestep=t,  # TODO: debug how handled batched and non batched timesteps
+                step_index=step_index,
+                total_step_count=total_step_count,
+                conditioning_data=conditioning_data,
+                # extra:
+                down_block_additional_residuals=down_block_additional_residuals,  # for ControlNet
+                mid_block_additional_residual=mid_block_additional_residual,  # for ControlNet
+                down_intrablock_additional_residuals=down_intrablock_additional_residuals,  # for T2I-Adapter
+            )
+
+            guidance_scale = conditioning_data.guidance_scale
+            if isinstance(guidance_scale, list):
+                guidance_scale = guidance_scale[step_index]
+
+            total_noise_pred = self.invokeai_diffuser._combine(
+                uc_noise_pred,
+                c_noise_pred,
+                guidance_scale,
+            )
 
         # compute the previous noisy sample x_t -> x_t-1
         #self.scheduler._init_step_index(t) # I don't know why this is needed, but it stops things from breaking
