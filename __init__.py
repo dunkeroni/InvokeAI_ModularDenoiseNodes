@@ -1,3 +1,1 @@
-#from .DemoFusion_Invocations import DemoFusionAllInOneInvocation
-#from .rawtest import DemoFusionRawInvocation
-from .DemoFusion_AllOverrides import DemoFusionDenoiseLatentsInvocation
+from .Modular_Denoise_Latents import ModularDenoiseLatentsInvocation
