@@ -196,12 +196,12 @@ MD_PAD_MODES = Literal[
 ]
 
 @invocation("multidiffusion_sampling_module",
-    title="MultiDiffusion Sampling Step module",
+    title="MultiDiffusion Module",
     tags=["module", "modular"],
     category="modular",
     version="1.0.0",
 )
-class MultiDiffusionSamplingInvocation(BaseInvocation):
+class MultiDiffusionSamplingModuleInvocation(BaseInvocation):
     sub_module: Optional[ModuleData] = InputField(
         default=None,
         description="The custom module to use for each noise prediction tile. No connection will use the default pipeline.",
@@ -309,17 +309,17 @@ def dilated_sampling(
                 **kwargs,
             )
 
-            # sinsert subsample noise prediction into total tensor
+            # insert subsample noise prediction into total tensor
             total_noise_pred[:, :, h::dilation_scale, w::dilation_scale] = noise_pred
     return total_noise_pred
 
-invocation("dilated_sampling_module",
-    title="Dilated Sampling Step module",
+@invocation("dilated_sampling_module",
+    title="Dilated Sampling module",
     tags=["module", "modular"],
     category="modular",
     version="1.0.0",
 )
-class DilatedSamplingInvocation(BaseInvocation):
+class DilatedSamplingModuleInvocation(BaseInvocation):
     sub_module: Optional[ModuleData] = InputField(
         default=None,
         description="The custom module to use for each interlaced noise prediction. No connection will use the default pipeline.",
@@ -349,6 +349,107 @@ class DilatedSamplingInvocation(BaseInvocation):
                 "sub_module": self.sub_module,
                 "dilation_scale": self.dilation_scale,
                 "gaussian_decay_rate": self.gaussian_decay_rate,
+            },
+        )
+
+        return ModuleDataOutput(
+            module_data_output=module,
+        )
+
+####################################################################################################
+# Transfer Function: Cosine Decay
+####################################################################################################
+@module_noise_pred("cosine_decay_transfer")
+def cosine_decay_transfer(
+    self: Modular_StableDiffusionGeneratorPipeline,
+    sample: torch.Tensor,
+    t: torch.Tensor,
+    conditioning_data,  # TODO: type
+    step_index: int,
+    total_step_count: int,
+    module_kwargs: dict | None,
+    **kwargs,
+) -> torch.Tensor:
+    decay_rate = module_kwargs["decay_rate"]
+    if module_kwargs["sub_module_1"] is None:
+        sub_module_1 = get_noise_prediction_module(None) #default case
+        sub_module_1_kwargs = {}
+    else:
+        sub_module_1 = get_noise_prediction_module(module_kwargs["sub_module_1"]["module"])
+        sub_module_1_kwargs = module_kwargs["sub_module_1"]["module_kwargs"]
+    
+    if module_kwargs["sub_module_2"] is None:
+        sub_module_2 = get_noise_prediction_module(None)
+        sub_module_2_kwargs = {}
+    else:
+        sub_module_2 = get_noise_prediction_module(module_kwargs["sub_module_2"]["module"])
+        sub_module_2_kwargs = module_kwargs["sub_module_2"]["module_kwargs"]
+
+    cosine_factor = 0.5 * (1 + torch.cos(torch.pi * (self.scheduler.config.num_train_timesteps - t) / self.scheduler.config.num_train_timesteps)).cpu()
+    c2 = 1 - cosine_factor ** decay_rate
+
+    pred_1 = sub_module_1(
+        self=self,
+        sample=sample,
+        t=t,
+        conditioning_data=conditioning_data,
+        step_index=step_index,
+        total_step_count=total_step_count,
+        module_kwargs=sub_module_1_kwargs,
+        **kwargs,
+    )
+
+    pred_2 = sub_module_2(
+        self=self,
+        sample=sample,
+        t=t,
+        conditioning_data=conditioning_data,
+        step_index=step_index,
+        total_step_count=total_step_count,
+        module_kwargs=sub_module_2_kwargs,
+        **kwargs,
+    )
+    total_noise_pred = torch.lerp(pred_1, pred_2, c2.to(pred_1.device, dtype=pred_1.dtype))
+
+    return total_noise_pred
+
+@invocation("cosine_decay_transfer_module",
+    title="Cosine Decay Transfer",
+    tags=["module", "modular"],
+    category="modular",
+    version="1.0.0",
+)
+class CosineDecayTransferModuleInvocation(BaseInvocation):
+    sub_module_1: Optional[ModuleData] = InputField(
+        default=None,
+        description="The custom module to use for the first noise prediction. No connection will use the default pipeline.",
+        title="SubModules",
+        input=Input.Connection,
+        ui_type=UIType.Any,
+    )
+    sub_module_2: Optional[ModuleData] = InputField(
+        default=None,
+        description="The custom module to use for the second noise prediction. No connection will use the default pipeline.",
+        title="SubModules",
+        input=Input.Connection,
+        ui_type=UIType.Any,
+    )
+    decay_rate: float = InputField(
+        title="Cosine Decay Rate",
+        description="The decay rate to use when combining the two noise predictions. Higher values will shift the balance towards the second noise prediction sooner",
+        ge=0,
+        default=1,
+    )
+
+    def invoke(self, context: InvocationContext) -> ModuleDataOutput:
+        module = ModuleData(
+            name="Cosine Decay Transfer module",
+            module_type="do_unet_step",
+            module="cosine_decay_transfer",
+            module_kwargs={
+                "sub_module_1": self.sub_module_1,
+                "sub_module_2": self.sub_module_2,
+                "decay_rate": self.decay_rate,
             },
         )
 

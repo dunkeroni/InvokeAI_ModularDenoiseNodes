@@ -12,6 +12,7 @@ def module_noise_pred(name: str) -> Callable:
         if name in NOISE_PREDICTION_MODULES:
             raise ValueError(f"Module with name {name} already registered.")
         NOISE_PREDICTION_MODULES[name] = module
+        print(f"Registered module {name}.")
 
         return module
     return wrapper
