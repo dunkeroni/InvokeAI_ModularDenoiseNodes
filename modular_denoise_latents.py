@@ -17,7 +17,7 @@ from invokeai.app.invocations.baseinvocation import (
 )
 
 import math
-from typing import Callable, List, Optional
+from typing import Callable, List, Optional, Union, Any
 
 import torch
 import torch.nn.functional as F
@@ -25,30 +25,34 @@ import random
 from invokeai.backend.ip_adapter.unet_patcher import UNetPatcher
 from invokeai.backend.stable_diffusion.diffusion.conditioning_data import ConditioningData
 
+from invokeai.app.invocations.controlnet_image_processors import ControlField
+from invokeai.app.invocations.ip_adapter import IPAdapterField
+from invokeai.app.invocations.t2i_adapter import T2IAdapterField
+
 from invokeai.backend.stable_diffusion.diffusers_pipeline import (
     ControlNetData,
     IPAdapterData,
     T2IAdapterData
 )
+from invokeai.app.invocations.primitives import IntegerOutput
+from pydantic import BaseModel, Field
 
-from pydantic import BaseModel
+from .modular_noise_prediction import get_noise_prediction_module
 
-class Module(BaseModel):
-    name: str
-    module: function
-    kwargs: dict | None = None
 
 class ModuleData(BaseModel):
-    step: Module
-    sub_step: List[Module]| None = None #used for recursion
-    kwargs: dict | None = None
+    name: str = Field(description="Name of the module")
+    module_type: str = Field(description="Type of module. Not yet used, may be in future")
+    module: str = Field(description="Name of the module function")
+    module_kwargs: dict | None = Field(description="Keyword arguments to pass to the module function")
+
 
 @invocation_output("module_data_output")
 class ModuleDataOutput(BaseInvocationOutput):
-    module_data_output: ModuleData = OutputField(
+    module_data_output: ModuleData | None = OutputField(
         title="Module Data Output",
-        description="Module Data Output",
-        default=None,
+        description="Information for calling the module in denoise latents step()",
+        ui_type=UIType.Any,
     )
 
 
@@ -58,13 +62,20 @@ class ModuleDataOutput(BaseInvocationOutput):
     title="Modular Denoise Latents",
     tags=["modular", "generate", "denoise", "latents"],
     category="modular",
-    version="1.0.0",
+    version="1.4.0",
 )
 class Modular_DenoiseLatentsInvocation(DenoiseLatentsInvocation):
-    module: ModuleData = InputField(
-        title="Custom Step Module",
-        description="A Module (or chain of Modules) to be executed at each step of the diffusion process.",
+    module: Optional[ModuleData] = InputField(
+        default=None,
+        description="Information to override the default unet_step functions",
+        title="Custom Modules",
+        input=Input.Connection,
+        ui_type=UIType.Any,
     )
+
+    #control: Optional[Union[ControlField, list[ControlField]]] = None # remove from inputs
+    #ip_adapter: Optional[Union[IPAdapterField, list[IPAdapterField]]] = None # remove from inputs
+    #t2i_adapter: Optional[Union[T2IAdapterField, list[T2IAdapterField]]] = None # remove from inputs
 
     # OVERRIDE to use Modular_StableDiffusionGeneratorPipeline
     def create_pipeline(
@@ -93,6 +104,7 @@ class Modular_DenoiseLatentsInvocation(DenoiseLatentsInvocation):
         )
 
 
+
 class Modular_StableDiffusionGeneratorPipeline(StableDiffusionGeneratorPipeline):
 
     def __init__(self, *args, **kwargs):
@@ -104,29 +116,54 @@ class Modular_StableDiffusionGeneratorPipeline(StableDiffusionGeneratorPipeline)
     def custom_substep(
         self,
         sample: torch.Tensor,
-        timestep: torch.Tensor,
+        t: torch.Tensor,
         conditioning_data,  # TODO: type
         step_index: int,
         total_step_count: int,
         custom_module_data: ModuleData,
         **kwargs,
-    ) -> tuple:
+    ) -> torch.Tensor:
         
-        # Edge case for recursive chains
+        # default to standard diffusion pipeline result
         if custom_module_data is None:
-            # Return standard diffusion pipeline result
-            return self.invokeai_diffuser.do_unet_step(
+            uc_noise_pred, c_noise_pred = self.invokeai_diffuser.do_unet_step(
                 sample=sample,
-                timestep=timestep,
-                conditioning_data=conditioning_data,
+                timestep=t,  # TODO: debug how handled batched and non batched timesteps
                 step_index=step_index,
                 total_step_count=total_step_count,
-                **kwargs,
+                conditioning_data=conditioning_data,
+                # extra:
+                #down_block_additional_residuals=down_block_additional_residuals,  # for ControlNet
+                #mid_block_additional_residual=mid_block_additional_residual,  # for ControlNet
+                #down_intrablock_additional_residuals=down_intrablock_additional_residuals,  # for T2I-Adapter
+                **kwargs
             )
+
+            guidance_scale = conditioning_data.guidance_scale
+            if isinstance(guidance_scale, list):
+                guidance_scale = guidance_scale[step_index]
+
+            return self.invokeai_diffuser._combine(
+                uc_noise_pred,
+                c_noise_pred,
+                guidance_scale,
+            )
+
+        # invoke custom module
+        module_func: Callable = get_noise_prediction_module(custom_module_data.module)
+
+        return module_func(
+            self=self,
+            sample=sample,
+            t=t,
+            conditioning_data=conditioning_data,
+            step_index=step_index,
+            total_step_count=total_step_count,
+            module_kwargs=custom_module_data.module_kwargs,
+            **kwargs,
+            ) # recursive case
+
         
-
-
-
         #OVERRIDE to use custom_substep
     def step(
         self,
@@ -140,7 +177,6 @@ class Modular_StableDiffusionGeneratorPipeline(StableDiffusionGeneratorPipeline)
         ip_adapter_data: Optional[list[IPAdapterData]] = None,
         t2i_adapter_data: Optional[list[T2IAdapterData]] = None,
         ip_adapter_unet_patcher: Optional[UNetPatcher] = None,
-        custom_module_data: Optional[ModuleData] = None,
     ):
         # invokeai_diffuser has batched timesteps, but diffusers schedulers expect a single value
         timestep = t[0]
@@ -217,9 +253,9 @@ class Modular_StableDiffusionGeneratorPipeline(StableDiffusionGeneratorPipeline)
 
 
         ################################ CUSTOM SUBSTEP  ################################
-        uc_noise_pred, c_noise_pred = self.custom_substep(
+        noise_pred = self.custom_substep(
             sample=latent_model_input,
-            timestep=t,  # TODO: debug how handled batched and non batched timesteps
+            t=t,  # TODO: debug how handled batched and non batched timesteps
             step_index=step_index,
             total_step_count=total_step_count,
             conditioning_data=conditioning_data,
@@ -230,20 +266,6 @@ class Modular_StableDiffusionGeneratorPipeline(StableDiffusionGeneratorPipeline)
             down_intrablock_additional_residuals=down_intrablock_additional_residuals,  # for T2I-Adapter
         )
         ################################################################################
-
-
-        guidance_scale = conditioning_data.guidance_scale
-        if isinstance(guidance_scale, list):
-            guidance_scale = guidance_scale[step_index]
-
-        noise_pred = self.invokeai_diffuser._combine(uc_noise_pred, c_noise_pred, guidance_scale)
-        guidance_rescale_multiplier = conditioning_data.guidance_rescale_multiplier
-        if guidance_rescale_multiplier > 0:
-            noise_pred = self._rescale_cfg(
-                noise_pred,
-                c_noise_pred,
-                guidance_rescale_multiplier,
-            )
 
         # compute the previous noisy sample x_t -> x_t-1
         step_output = self.scheduler.step(noise_pred, timestep, latents, **conditioning_data.scheduler_args)

@@ -15,3 +15,15 @@ ModularDenoiseLatentsNode
 StableDiffusionGeneratorPipeline
 ├── step() # Overrides StableDiffusionGeneratorPipeline.step()
 
+
+To add:  
+- MultiDiffusion
+- Dilated Sampling (add butterworth filtering option?)
+- Skip Residual
+- Tiled Denoise
+- SDXL Color Correction
+
+## Update: That's all not going to work.  
+Primarily because function call references are not serializable. Can't pass them between nodes.  
+### New Strategy!
+Handle imports for functions from a special modifiers folder, and pass in names instead of direct references.
