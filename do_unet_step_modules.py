@@ -2,7 +2,7 @@ from .modular_noise_prediction import module_noise_pred, get_noise_prediction_mo
 from .modular_denoise_latents import Modular_StableDiffusionGeneratorPipeline, ModuleData, ModuleDataOutput
 from invokeai.backend.stable_diffusion.diffusion.conditioning_data import ConditioningData
 import torch
-from typing import Literal, Optional
+from typing import Literal, Optional, Callable
 
 from invokeai.app.invocations.baseinvocation import (
     BaseInvocation,
@@ -18,9 +18,21 @@ from invokeai.app.invocations.baseinvocation import (
     invocation_output,
 )
 
+
+def resolve_module(module_dict: dict | None) -> tuple[Callable, dict]:
+    """Resolve a module from a module dict. Handles None case automatically. """
+    if module_dict is None:
+        return get_noise_prediction_module(None), {}
+    else:
+        return get_noise_prediction_module(module_dict["module"]), module_dict["module_kwargs"]
+
+
 ####################################################################################################
 # Standard UNet Step Module
 ####################################################################################################
+"""
+Fallback module for the noise prediction pipeline. This module is used when no other module is specified.
+"""
 @module_noise_pred("standard_unet_step_module")
 def standard_do_unet_step(
     self: Modular_StableDiffusionGeneratorPipeline,
@@ -60,7 +72,7 @@ def standard_do_unet_step(
     version="1.0.0",
 )
 class StandardStepModuleInvocation(BaseInvocation):
-    
+    """Module: InvokeAI standard noise prediction."""
     def invoke(self, context: InvocationContext) -> ModuleDataOutput:
         module = ModuleData(
             name="Standard UNet Step Module",
@@ -147,12 +159,7 @@ def multidiffusion_sampling(
     window_size = module_kwargs["tile_size"] // 8
     stride = module_kwargs["stride"] // 8
     pad_mode = module_kwargs["pad_mode"]
-    if module_kwargs["sub_module"] is None:
-        sub_module = get_noise_prediction_module(None) #default case
-        sub_module_kwargs = {}
-    else:
-        sub_module = get_noise_prediction_module(module_kwargs["sub_module"]["module"])
-        sub_module_kwargs = module_kwargs["sub_module"]["module_kwargs"]
+    sub_module, sub_module_kwargs = resolve_module(module_kwargs["sub_module"])
 
     views = get_views(height, width, stride=stride, window_size=window_size, random_jitter=True)
 
@@ -202,6 +209,7 @@ MD_PAD_MODES = Literal[
     version="1.0.0",
 )
 class MultiDiffusionSamplingModuleInvocation(BaseInvocation):
+    """Module: MultiDiffusion tiled sampling"""
     sub_module: Optional[ModuleData] = InputField(
         default=None,
         description="The custom module to use for each noise prediction tile. No connection will use the default pipeline.",
@@ -283,12 +291,7 @@ def dilated_sampling(
     cosine_factor = 0.5 * (1 + torch.cos(torch.pi * (self.scheduler.config.num_train_timesteps - t) / self.scheduler.config.num_train_timesteps)).cpu()
     sigma = cosine_factor ** gaussian_decay_rate + 1e-2
 
-    if module_kwargs["sub_module"] is None:
-        sub_module = get_noise_prediction_module(None) #default case
-        sub_module_kwargs = {}
-    else:
-        sub_module = get_noise_prediction_module(module_kwargs["sub_module"]["module"])
-        sub_module_kwargs = module_kwargs["sub_module"]["module_kwargs"]
+    sub_module, sub_module_kwargs = resolve_module(module_kwargs["sub_module"])
         
     total_noise_pred = torch.zeros_like(latent_model_input)
     std_, mean_ = latent_model_input.std(), latent_model_input.mean()
@@ -320,6 +323,7 @@ def dilated_sampling(
     version="1.0.0",
 )
 class DilatedSamplingModuleInvocation(BaseInvocation):
+    """Module: Dilated Sampling"""
     sub_module: Optional[ModuleData] = InputField(
         default=None,
         description="The custom module to use for each interlaced noise prediction. No connection will use the default pipeline.",
@@ -371,19 +375,8 @@ def cosine_decay_transfer(
     **kwargs,
 ) -> torch.Tensor:
     decay_rate = module_kwargs["decay_rate"]
-    if module_kwargs["sub_module_1"] is None:
-        sub_module_1 = get_noise_prediction_module(None) #default case
-        sub_module_1_kwargs = {}
-    else:
-        sub_module_1 = get_noise_prediction_module(module_kwargs["sub_module_1"]["module"])
-        sub_module_1_kwargs = module_kwargs["sub_module_1"]["module_kwargs"]
-    
-    if module_kwargs["sub_module_2"] is None:
-        sub_module_2 = get_noise_prediction_module(None)
-        sub_module_2_kwargs = {}
-    else:
-        sub_module_2 = get_noise_prediction_module(module_kwargs["sub_module_2"]["module"])
-        sub_module_2_kwargs = module_kwargs["sub_module_2"]["module_kwargs"]
+    sub_module_1, sub_module_1_kwargs = resolve_module(module_kwargs["sub_module_1"])
+    sub_module_2, sub_module_2_kwargs = resolve_module(module_kwargs["sub_module_2"])
 
     cosine_factor = 0.5 * (1 + torch.cos(torch.pi * (self.scheduler.config.num_train_timesteps - t) / self.scheduler.config.num_train_timesteps)).cpu()
     c2 = 1 - cosine_factor ** decay_rate
@@ -420,17 +413,18 @@ def cosine_decay_transfer(
     version="1.0.0",
 )
 class CosineDecayTransferModuleInvocation(BaseInvocation):
+    """Module: Smoothly transition between two modules"""
     sub_module_1: Optional[ModuleData] = InputField(
         default=None,
         description="The custom module to use for the first noise prediction. No connection will use the default pipeline.",
-        title="SubModules",
+        title="SubModule 1",
         input=Input.Connection,
         ui_type=UIType.Any,
     )
     sub_module_2: Optional[ModuleData] = InputField(
         default=None,
         description="The custom module to use for the second noise prediction. No connection will use the default pipeline.",
-        title="SubModules",
+        title="SubModule 2",
         input=Input.Connection,
         ui_type=UIType.Any,
     )
@@ -450,6 +444,217 @@ class CosineDecayTransferModuleInvocation(BaseInvocation):
                 "sub_module_1": self.sub_module_1,
                 "sub_module_2": self.sub_module_2,
                 "decay_rate": self.decay_rate,
+            },
+        )
+
+        return ModuleDataOutput(
+            module_data_output=module,
+        )
+
+####################################################################################################
+# Transfer Function: Linear
+####################################################################################################
+@module_noise_pred("linear_transfer")
+def linear_transfer(
+    self: Modular_StableDiffusionGeneratorPipeline,
+    sample: torch.Tensor,
+    t: torch.Tensor,
+    conditioning_data,  # TODO: type
+    step_index: int,
+    total_step_count: int,
+    module_kwargs: dict | None,
+    **kwargs,
+) -> torch.Tensor:
+    start_step: int = int(module_kwargs["start_step_percent"] * total_step_count)
+    end_step: int = int(module_kwargs["end_step_percent"] * total_step_count)
+    sub_module_1, sub_module_1_kwargs = resolve_module(module_kwargs["sub_module_1"])
+    sub_module_2, sub_module_2_kwargs = resolve_module(module_kwargs["sub_module_2"])
+    
+    linear_factor = (step_index - start_step) / (end_step - start_step)
+    # (self.scheduler.config.num_train_timesteps - t)
+    print(t)
+    print((self.scheduler.config.num_train_timesteps - t) / self.scheduler.config.num_train_timesteps)
+
+    #clamp linear factor to [0,1]
+    linear_factor = min(max(linear_factor, 0), 1)
+
+    if linear_factor < 1:
+        pred_1 = sub_module_1(
+            self=self,
+            sample=sample,
+            t=t,
+            conditioning_data=conditioning_data,
+            step_index=step_index,
+            total_step_count=total_step_count,
+            module_kwargs=sub_module_1_kwargs,
+            **kwargs,
+        )
+
+    if linear_factor > 0:
+        pred_2 = sub_module_2(
+            self=self,
+            sample=sample,
+            t=t,
+            conditioning_data=conditioning_data,
+            step_index=step_index,
+            total_step_count=total_step_count,
+            module_kwargs=sub_module_2_kwargs,
+            **kwargs,
+        )
+    
+    if linear_factor == 0:
+        total_noise_pred = pred_1 # no need to lerp
+        print(f"Linear Transfer: pred_1")
+    elif linear_factor == 1:
+        total_noise_pred = pred_2 # no need to lerp
+        print(f"Linear Transfer: pred_2")
+    else:
+        total_noise_pred = torch.lerp(pred_1, pred_2, linear_factor)
+        print(f"Linear Transfer: lerp(pred_1, pred_2, {linear_factor})")
+
+    return total_noise_pred
+
+@invocation("linear_transfer_module",
+    title="Linear Transfer",
+    tags=["module", "modular"],
+    category="modular",
+    version="1.0.0",
+)
+class LinearTransferModuleInvocation(BaseInvocation):
+    """Module: Debug only. Not yet working."""
+    sub_module_1: Optional[ModuleData] = InputField(
+        default=None,
+        description="The custom module to use for the first noise prediction. No connection will use the default pipeline.",
+        title="SubModule 1",
+        input=Input.Connection,
+        ui_type=UIType.Any,
+    )
+    sub_module_2: Optional[ModuleData] = InputField(
+        default=None,
+        description="The custom module to use for the second noise prediction. No connection will use the default pipeline.",
+        title="SubModule 2",
+        input=Input.Connection,
+        ui_type=UIType.Any,
+    )
+    start_step_percent: float = InputField(
+        title="Start Step %",
+        description="The step index at which to start using the second noise prediction",
+        ge=0,
+        le=1,
+        default=0,
+    )
+    end_step_percent: float = InputField(
+        title="End Step %",
+        description="The step index at which to stop using the first noise prediction",
+        ge=0,
+        le=1,
+        default=1,
+    )
+
+    def invoke(self, context: InvocationContext) -> ModuleDataOutput:
+        module = ModuleData(
+            name="Linear Transfer module",
+            module_type="do_unet_step",
+            module="linear_transfer",
+            module_kwargs={
+                "sub_module_1": self.sub_module_1,
+                "sub_module_2": self.sub_module_2,
+                "start_step_percent": self.start_step_percent,
+                "end_step_percent": self.end_step_percent,
+            },
+        )
+
+        return ModuleDataOutput(
+            module_data_output=module,
+        )
+
+####################################################################################################
+# Tiled Denoise Latents
+####################################################################################################
+@module_noise_pred("tiled_denoise")
+def tiled_denoise_latents(
+    self: Modular_StableDiffusionGeneratorPipeline,
+    sample: torch.Tensor,
+    t: torch.Tensor,
+    conditioning_data,  # TODO: type
+    step_index: int,
+    total_step_count: int,
+    module_kwargs: dict | None,
+    **kwargs,
+) -> torch.Tensor:
+    latent_model_input = sample
+    height = latent_model_input.shape[2]
+    width = latent_model_input.shape[3]
+    window_size = module_kwargs["tile_size"] // 8
+    stride = max(window_size - (module_kwargs["overlap"] // 8),8)
+    sub_module, sub_module_kwargs = resolve_module(module_kwargs["sub_module"])
+
+    views = get_views(height, width, stride=stride, window_size=window_size, random_jitter=False)
+
+    count_local = torch.zeros_like(latent_model_input)
+    value_local = torch.zeros_like(latent_model_input)
+    
+    for j, view in enumerate(views):
+        h_start, h_end, w_start, w_end = view
+        latents_for_view = latent_model_input[:, :, h_start:h_end, w_start:w_end]
+
+        noise_pred = sub_module(
+            self=self,
+            sample=latents_for_view,
+            t=t,
+            conditioning_data=conditioning_data,
+            step_index=step_index,
+            total_step_count=total_step_count,
+            module_kwargs=sub_module_kwargs,
+            **kwargs,
+        )
+
+        value_local[:, :, h_start:h_end, w_start:w_end] += noise_pred #step_output.prev_sample.detach().clone()
+        count_local[:, :, h_start:h_end, w_start:w_end] += 1
+
+    pred_multi = (value_local / count_local)
+
+    return pred_multi
+
+@invocation("tiled_denoise_latents_module",
+    title="Tiled Denoise Module",
+    tags=["module", "modular"],
+    category="modular",
+    version="1.0.0",
+)
+class TiledDenoiseLatentsModuleInvocation(BaseInvocation):
+    """Module: Denoise latents using tiled noise prediction"""
+    sub_module: Optional[ModuleData] = InputField(
+        default=None,
+        description="The custom module to use for each noise prediction tile. No connection will use the default pipeline.",
+        title="SubModules",
+        input=Input.Connection,
+        ui_type=UIType.Any,
+    )
+    tile_size: int = InputField(
+        title="Tile Size",
+        description="Size of the tiles during noise prediction",
+        ge=128,
+        default=512,
+        multiple_of=8,
+    )
+    overlap: int = InputField(
+        title="Overlap",
+        description="The minimum amount of overlap between tiles during noise prediction",
+        ge=0,
+        default=64,
+        multiple_of=8,
+    )
+
+    def invoke(self, context: InvocationContext) -> ModuleDataOutput:
+        module = ModuleData(
+            name="Tiled Denoise Latents module",
+            module_type="do_unet_step",
+            module="tiled_denoise",
+            module_kwargs={
+                "sub_module": self.sub_module,
+                "tile_size": self.tile_size,
+                "overlap": self.overlap,
             },
         )
 

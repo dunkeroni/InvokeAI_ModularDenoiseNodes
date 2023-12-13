@@ -41,6 +41,10 @@ from .modular_noise_prediction import get_noise_prediction_module
 
 
 class ModuleData(BaseModel):
+    """
+    NOTE: Even though this data type is defined here, and there is a matching outputfield for it, they are only used for construction in the invocations.
+    Because of how the Custom Modules inputs work (Any type) they are recieved in the invocations as a dict. 
+    """
     name: str = Field(description="Name of the module")
     module_type: str = Field(description="Type of module. Not yet used, may be in future")
     module: str = Field(description="Name of the module function")

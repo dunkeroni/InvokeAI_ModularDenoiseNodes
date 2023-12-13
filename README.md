@@ -11,10 +11,10 @@ All modules can be found by searching "modular" in the workflow interface.
 | MultiDiffusion Module | Splits the denoise process into multiple overlapping tiles. Adds generation time but reduces VRAM usage. Randomly shifts tiles each step to prevent visible seams. The random movement requires an additional buffer to be added around the latent. The buffer padding mode can be selected on the node. |
 | Dilated Sampling Module | Splits the denoise process into multiple interwoven latent tiles. Reduces VRAM usage. Dramatically reduces quality. Used in the DemoFusion process to maintain structure for MultiDiffusion via a cosine decay transfer. |
 | Cosine Decay Transfer | Smoothly changes over from one pipeline override to another. Higher decay values swap over sooner. |
-| Linear Transfer | NOT YET IMPLEMENTED |
+| Linear Transfer | Partialy implemented: The actual behavior is not what users will expect. Use Cosine instead. |
 | Skip Residual Module | NOT YET IMPLEMENTED |
 | Latent Color Correction | NOT YET IMPLEMENTED |
-| Tiled Denoise | NOT YET IMPLEMENTED |
+| Tiled Denoise | Splits the denoise process into multiple overlapping tiles. Adds generation time but reduces VRAM usage. Tile positions are maintained with a static minimum overlap. |
 
 Modules can be connected into each other as sub-modules in a tree structure. Transfer modules will change the noise prediction from one pipeline to the other. Normal noise prediction modules will apply their sub-modules in their internal process. Example: MultiDiffusion will split the latent into tiles, and then use its sub-module pipeline to process each tile individually.
 ![image](https://github.com/dunkeroni/InvokeAI_DemoFusion/assets/3298737/06fc0004-830b-4895-bf0e-b97976b612b1)
