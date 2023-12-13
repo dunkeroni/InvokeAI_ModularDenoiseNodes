@@ -16,3 +16,5 @@ All modules can be found by searching "modular" in the workflow interface.
 | Latent Color Correction | NOT YET IMPLEMENTED |
 | Tiled Denoise | NOT YET IMPLEMENTED |
 
+Modules can be connected into each other as sub-modules in a tree structure. Transfer modules will change the noise prediction from one pipeline to the other. Normal noise prediction modules will apply their sub-modules in their internal process. Example: MultiDiffusion will split the latent into tiles, and then use its sub-module pipeline to process each tile individually.
+![image](https://github.com/dunkeroni/InvokeAI_DemoFusion/assets/3298737/06fc0004-830b-4895-bf0e-b97976b612b1)
