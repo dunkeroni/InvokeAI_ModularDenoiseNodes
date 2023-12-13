@@ -314,7 +314,7 @@ def dilated_sampling(
     return total_noise_pred
 
 @invocation("dilated_sampling_module",
-    title="Dilated Sampling module",
+    title="Dilated Sampling Module",
     tags=["module", "modular"],
     category="modular",
     version="1.0.0",
