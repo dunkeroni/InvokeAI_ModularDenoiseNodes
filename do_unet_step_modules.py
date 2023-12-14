@@ -88,6 +88,7 @@ class StandardStepModuleInvocation(BaseInvocation):
 
 ####################################################################################################
 # MultiDiffusion Sampling
+# From: https://multidiffusion.github.io/
 ####################################################################################################
 import random
 import torch.nn.functional as F
@@ -257,6 +258,7 @@ class MultiDiffusionSamplingModuleInvocation(BaseInvocation):
 
 ####################################################################################################
 # Dilated Sampling
+# From: https://ruoyidu.github.io/demofusion/demofusion.html
 ####################################################################################################
 def gaussian_kernel(kernel_size=3, sigma=1.0, channels=3):
     x_coord = torch.arange(kernel_size)
@@ -362,6 +364,7 @@ class DilatedSamplingModuleInvocation(BaseInvocation):
 
 ####################################################################################################
 # Transfer Function: Cosine Decay
+# From: https://ruoyidu.github.io/demofusion/demofusion.html
 ####################################################################################################
 @module_noise_pred("cosine_decay_transfer")
 def cosine_decay_transfer(
@@ -413,7 +416,7 @@ def cosine_decay_transfer(
     version="1.0.0",
 )
 class CosineDecayTransferModuleInvocation(BaseInvocation):
-    """Module: Smoothly transition between two modules"""
+    """Module: Smoothly changed modules based on remaining denoise"""
     sub_module_1: Optional[ModuleData] = InputField(
         default=None,
         description="The custom module to use for the first noise prediction. No connection will use the default pipeline.",
@@ -465,17 +468,12 @@ def linear_transfer(
     module_kwargs: dict | None,
     **kwargs,
 ) -> torch.Tensor:
-    start_step: int = int(module_kwargs["start_step_percent"] * total_step_count)
-    end_step: int = int(module_kwargs["end_step_percent"] * total_step_count)
+    start_step: int = module_kwargs["start_step"]
+    end_step: int = module_kwargs["end_step"]
     sub_module_1, sub_module_1_kwargs = resolve_module(module_kwargs["sub_module_1"])
     sub_module_2, sub_module_2_kwargs = resolve_module(module_kwargs["sub_module_2"])
     
     linear_factor = (step_index - start_step) / (end_step - start_step)
-    # (self.scheduler.config.num_train_timesteps - t)
-    print(t)
-    print((self.scheduler.config.num_train_timesteps - t) / self.scheduler.config.num_train_timesteps)
-
-    #clamp linear factor to [0,1]
     linear_factor = min(max(linear_factor, 0), 1)
 
     if linear_factor < 1:
@@ -521,7 +519,7 @@ def linear_transfer(
     version="1.0.0",
 )
 class LinearTransferModuleInvocation(BaseInvocation):
-    """Module: Debug only. Not yet working."""
+    """Module: Smoothly change modules based on step."""
     sub_module_1: Optional[ModuleData] = InputField(
         default=None,
         description="The custom module to use for the first noise prediction. No connection will use the default pipeline.",
@@ -536,19 +534,17 @@ class LinearTransferModuleInvocation(BaseInvocation):
         input=Input.Connection,
         ui_type=UIType.Any,
     )
-    start_step_percent: float = InputField(
-        title="Start Step %",
+    start_step: int = InputField(
+        title="Start Step",
         description="The step index at which to start using the second noise prediction",
         ge=0,
-        le=1,
         default=0,
     )
-    end_step_percent: float = InputField(
-        title="End Step %",
+    end_step: int = InputField(
+        title="End Step",
         description="The step index at which to stop using the first noise prediction",
         ge=0,
-        le=1,
-        default=1,
+        default=10,
     )
 
     def invoke(self, context: InvocationContext) -> ModuleDataOutput:
@@ -559,8 +555,8 @@ class LinearTransferModuleInvocation(BaseInvocation):
             module_kwargs={
                 "sub_module_1": self.sub_module_1,
                 "sub_module_2": self.sub_module_2,
-                "start_step_percent": self.start_step_percent,
-                "end_step_percent": self.end_step_percent,
+                "start_step": self.start_step,
+                "end_step": self.end_step,
             },
         )
 
@@ -655,6 +651,109 @@ class TiledDenoiseLatentsModuleInvocation(BaseInvocation):
                 "sub_module": self.sub_module,
                 "tile_size": self.tile_size,
                 "overlap": self.overlap,
+            },
+        )
+
+        return ModuleDataOutput(
+            module_data_output=module,
+        )
+
+####################################################################################################
+# Color Correction
+# From: https://huggingface.co/blog/TimothyAlexisVass/explaining-the-sdxl-latent-space
+####################################################################################################
+
+# Shrinking towards the mean (will also remove outliers)
+def soft_clamp_tensor(input_tensor, threshold=3.5, boundary=4):
+    if max(abs(input_tensor.max()), abs(input_tensor.min())) < 4:
+        return input_tensor
+    channel_dim = 1
+
+    max_vals = input_tensor.max(channel_dim, keepdim=True)[0]
+    max_replace = ((input_tensor - threshold) / (max_vals - threshold)) * (boundary - threshold) + threshold
+    over_mask = (input_tensor > threshold)
+
+    min_vals = input_tensor.min(channel_dim, keepdim=True)[0]
+    min_replace = ((input_tensor + threshold) / (min_vals + threshold)) * (-boundary + threshold) - threshold
+    under_mask = (input_tensor < -threshold)
+
+    return torch.where(over_mask, max_replace, torch.where(under_mask, min_replace, input_tensor))
+
+# Center tensor (balance colors)
+def center_tensor(input_tensor, channel_shift=1, full_shift=1, channels=[0, 1, 2, 3]):
+    for channel in channels:
+        input_tensor[0, channel] -= input_tensor[0, channel].mean() * channel_shift
+    return input_tensor - input_tensor.mean() * full_shift
+
+# Maximize/normalize tensor
+def maximize_tensor(input_tensor, boundary=4, channels=[0, 1, 2]):
+    min_val = input_tensor.min()
+    max_val = input_tensor.max()
+
+    normalization_factor = boundary / max(abs(min_val), abs(max_val))
+    input_tensor[0, channels] *= normalization_factor
+
+    return input_tensor
+
+@module_noise_pred("color_correction")
+def color_correction(
+    self: Modular_StableDiffusionGeneratorPipeline,
+    sample: torch.Tensor,
+    t: torch.Tensor,
+    conditioning_data,  # TODO: type
+    step_index: int,
+    total_step_count: int,
+    module_kwargs: dict | None,
+    **kwargs,
+) -> torch.Tensor:
+    sub_module, sub_module_kwargs = resolve_module(module_kwargs["sub_module"])
+    timestep: float = t.item()
+
+    noise_pred: torch.Tensor = sub_module(
+        self=self,
+        sample=sample,
+        t=t,
+        conditioning_data=conditioning_data,
+        step_index=step_index,
+        total_step_count=total_step_count,
+        module_kwargs=sub_module_kwargs,
+        **kwargs,
+    )
+
+    if timestep > 950:
+        threshold = max(noise_pred.max(), abs(noise_pred.min())) * 0.998
+        noise_pred = soft_clamp_tensor(noise_pred, threshold*0.998, threshold)
+    if timestep > 700:
+        noise_pred = center_tensor(noise_pred, 0.8, 0.8)
+    if timestep > 1 and timestep < 100:
+        noise_pred = center_tensor(noise_pred, 0.6, 1.0)
+        noise_pred = maximize_tensor(noise_pred)
+
+    return noise_pred
+
+@invocation("color_correction_module",
+    title="Color Correction Module",
+    tags=["module", "modular"],
+    category="modular",
+    version="1.0.0",
+)
+class ColorCorrectionModuleInvocation(BaseInvocation):
+    """Module: Color Correction (fix SDXL yellow bias)"""
+    sub_module: Optional[ModuleData] = InputField(
+        default=None,
+        description="The custom module to use for each noise prediction tile. No connection will use the default pipeline.",
+        title="SubModules",
+        input=Input.Connection,
+        ui_type=UIType.Any,
+    )
+
+    def invoke(self, context: InvocationContext) -> ModuleDataOutput:
+        module = ModuleData(
+            name="Color Correction module",
+            module_type="do_unet_step",
+            module="color_correction",
+            module_kwargs={
+                "sub_module": self.sub_module,
             },
         )
 

@@ -8,4 +8,8 @@ from .do_unet_step_modules import (
     DilatedSamplingModuleInvocation,
     cosine_decay_transfer,
     CosineDecayTransferModuleInvocation,
+    linear_transfer,
+    LinearTransferModuleInvocation,
+    color_correction,
+    ColorCorrectionModuleInvocation,
 )
