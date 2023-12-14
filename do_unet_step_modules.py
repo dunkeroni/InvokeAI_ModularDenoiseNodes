@@ -757,8 +757,8 @@ CHANNEL_VALUES = {
     "SDXL Colors Only": [1, 2],
     "L0: Brightness": [0],
     "L1: SD1 Highlights // SDXL Red->Cyan": [1],
-    "L2: SD1 Red/Green // SDXL Magenta->Green": [2],
-    "L3: SD1 Magenta/Yellow // SDXL Structure": [3],
+    "L2: SD1 Red->Green // SDXL Magenta->Green": [2],
+    "L3: SD1 Magenta->Yellow // SDXL Structure": [3],
 }
 
 CHANNEL_DESCRIPTION = """The channels to affect in the latent correction.\n
