@@ -748,8 +748,8 @@ CHANNEL_SELECTIONS = Literal[
     "SDXL Colors Only",
     "L0: Brightness",
     "L1: SD1 Highlights // SDXL Red->Cyan",
-    "L2: SD1 Red/Green // SDXL Magenta->Green",
-    "L3: SD1 Magenta/Yellow // SDXL Structure",
+    "L2: SD1 Red->Green // SDXL Magenta->Green",
+    "L3: SD1 Magenta->Yellow // SDXL Structure",
 ]
 
 CHANNEL_VALUES = {
@@ -782,7 +782,7 @@ class ColorGuidanceModuleInvocation(BaseInvocation):
     )
     adjustment: float = InputField(
         title="Adjustment",
-        description="0: Will correct colors to remain within VAE bounds.\nOthervalues will shift the mean of the latent.\nRecommended range: -0.2->0.2",
+        description="0: Will correct colors to remain within VAE bounds. Othervalues will shift the mean of the latent. Recommended range: -0.2->0.2",
         default=0,
     )
     channel_selection: CHANNEL_SELECTIONS = InputField(
@@ -793,7 +793,7 @@ class ColorGuidanceModuleInvocation(BaseInvocation):
     )
     expand_dynamic_range: bool = InputField(
         title="Expand Dynamic Range",
-        description="If true, will expand the dynamic range of the latent channels to match the range of the VAE.",
+        description="If true, will expand the dynamic range of the latent channels to match the range of the VAE. Recommend FALSE when adjustment is not 0",
         default=True,
         input=Input.Direct,
     )
