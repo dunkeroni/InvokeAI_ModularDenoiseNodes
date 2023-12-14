@@ -10,6 +10,6 @@ from .do_unet_step_modules import (
     CosineDecayTransferModuleInvocation,
     linear_transfer,
     LinearTransferModuleInvocation,
-    color_correction,
-    ColorCorrectionModuleInvocation,
+    color_guidance,
+    ColorGuidanceModuleInvocation,
 )

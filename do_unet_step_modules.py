@@ -664,39 +664,45 @@ class TiledDenoiseLatentsModuleInvocation(BaseInvocation):
 ####################################################################################################
 
 # Shrinking towards the mean (will also remove outliers)
-def soft_clamp_tensor(input_tensor, threshold=3.5, boundary=4):
+def soft_clamp_tensor(input_tensor: torch.Tensor, threshold=0.9, boundary=4, channels=[0, 1, 2]):
     if max(abs(input_tensor.max()), abs(input_tensor.min())) < 4:
         return input_tensor
-    channel_dim = 1
-
-    max_vals = input_tensor.max(channel_dim, keepdim=True)[0]
-    max_replace = ((input_tensor - threshold) / (max_vals - threshold)) * (boundary - threshold) + threshold
-    over_mask = (input_tensor > threshold)
-
-    min_vals = input_tensor.min(channel_dim, keepdim=True)[0]
-    min_replace = ((input_tensor + threshold) / (min_vals + threshold)) * (-boundary + threshold) - threshold
-    under_mask = (input_tensor < -threshold)
-
-    return torch.where(over_mask, max_replace, torch.where(under_mask, min_replace, input_tensor))
-
-# Center tensor (balance colors)
-def center_tensor(input_tensor, channel_shift=1, full_shift=1, channels=[0, 1, 2, 3]):
     for channel in channels:
-        input_tensor[0, channel] -= input_tensor[0, channel].mean() * channel_shift
-    return input_tensor - input_tensor.mean() * full_shift
+        channel_tensor = input_tensor[:, channel, ...]
 
-# Maximize/normalize tensor
-def maximize_tensor(input_tensor, boundary=4, channels=[0, 1, 2]):
-    min_val = input_tensor.min()
-    max_val = input_tensor.max()
+        max_val = channel_tensor.max()
+        max_replace = ((channel_tensor - threshold) / (max_val - threshold)) * (boundary - threshold) + threshold
+        over_mask = (channel_tensor > threshold)
 
-    normalization_factor = boundary / max(abs(min_val), abs(max_val))
-    input_tensor[0, channels] *= normalization_factor
+        min_val = channel_tensor.min()
+        min_replace = ((channel_tensor + threshold) / (min_val + threshold)) * (-boundary + threshold) - threshold
+        under_mask = (channel_tensor < -threshold)
+
+        input_tensor[:, channel, ...] = torch.where(over_mask, max_replace, torch.where(under_mask, min_replace, channel_tensor))
 
     return input_tensor
 
-@module_noise_pred("color_correction")
-def color_correction(
+# Center tensor (balance colors)
+def center_tensor(input_tensor: torch.Tensor, channel_shift=1, full_shift=1, channels=[0, 1, 2, 3], center = 0):
+    for channel in channels:
+        input_tensor[0, channel] -= (input_tensor[0, channel].mean() - center) * channel_shift
+    return input_tensor - (input_tensor.mean() - center) * full_shift
+
+# Maximize/normalize tensor
+def normalize_tensor(input_tensor, lower_bound, upper_bound, channels=[0, 1, 2], expand_dynamic_range=False):
+    min_val = input_tensor.min()
+    max_val = input_tensor.max()
+
+    if expand_dynamic_range:
+        normalization_factor = (upper_bound - lower_bound) / (max_val - min_val)
+    else:
+        normalization_factor = 1
+    input_tensor[0, channels] = (input_tensor[0, channels] - min_val) * normalization_factor + lower_bound
+
+    return input_tensor
+
+@module_noise_pred("color_guidance")
+def color_guidance(
     self: Modular_StableDiffusionGeneratorPipeline,
     sample: torch.Tensor,
     t: torch.Tensor,
@@ -707,6 +713,10 @@ def color_correction(
     **kwargs,
 ) -> torch.Tensor:
     sub_module, sub_module_kwargs = resolve_module(module_kwargs["sub_module"])
+    upper_bound: float = module_kwargs["upper_bound"]
+    lower_bound: float = module_kwargs["lower_bound"]
+    channels = module_kwargs["channels"]
+    expand_dynamic_range: bool = module_kwargs["expand_dynamic_range"]
     timestep: float = t.item()
 
     noise_pred: torch.Tensor = sub_module(
@@ -720,25 +730,49 @@ def color_correction(
         **kwargs,
     )
 
+    center = upper_bound * 0.5 + lower_bound * 0.5
+
     if timestep > 950:
         threshold = max(noise_pred.max(), abs(noise_pred.min())) * 0.998
         noise_pred = soft_clamp_tensor(noise_pred, threshold*0.998, threshold)
     if timestep > 700:
-        noise_pred = center_tensor(noise_pred, 0.8, 0.8)
+        noise_pred = center_tensor(noise_pred, 0.8, 0.8, channels=channels, center=center)
     if timestep > 1 and timestep < 100:
-        noise_pred = center_tensor(noise_pred, 0.6, 1.0)
-        noise_pred = maximize_tensor(noise_pred)
+        noise_pred = center_tensor(noise_pred, 0.6, 1.0, channels=channels, center=center)
+        noise_pred = normalize_tensor(noise_pred, lower_bound=lower_bound, upper_bound=upper_bound, channels=channels, expand_dynamic_range=expand_dynamic_range)
 
     return noise_pred
 
-@invocation("color_correction_module",
-    title="Color Correction Module",
+CHANNEL_SELECTIONS = Literal[
+    "All Channels",
+    "SDXL Colors Only",
+    "L0: Brightness",
+    "L1: SD1 Highlights // SDXL Red->Cyan",
+    "L2: SD1 Red/Green // SDXL Magenta->Green",
+    "L3: SD1 Magenta/Yellow // SDXL Structure",
+]
+
+CHANNEL_VALUES = {
+    "All Channels": [0, 1, 2, 3],
+    "SDXL Colors Only": [1, 2],
+    "L0: Brightness": [0],
+    "L1: SD1 Highlights // SDXL Red->Cyan": [1],
+    "L2: SD1 Red/Green // SDXL Magenta->Green": [2],
+    "L3: SD1 Magenta/Yellow // SDXL Structure": [3],
+}
+
+CHANNEL_DESCRIPTION = """The channels to affect in the latent correction.\n
+SDXL: L1 = Red/Cyan, L2 = Magenta/Green, L3 = Structure\n
+SD1.5: L1 = Shadows, L2 = Red/Green, L3 = Magenta/Yellow"""
+
+@invocation("color_guidance_module",
+    title="Color Guidance Module",
     tags=["module", "modular"],
     category="modular",
     version="1.0.0",
 )
-class ColorCorrectionModuleInvocation(BaseInvocation):
-    """Module: Color Correction (fix SDXL yellow bias)"""
+class ColorGuidanceModuleInvocation(BaseInvocation):
+    """Module: Color Guidance (fix SDXL yellow bias)"""
     sub_module: Optional[ModuleData] = InputField(
         default=None,
         description="The custom module to use for each noise prediction tile. No connection will use the default pipeline.",
@@ -746,14 +780,38 @@ class ColorCorrectionModuleInvocation(BaseInvocation):
         input=Input.Connection,
         ui_type=UIType.Any,
     )
+    adjustment: float = InputField(
+        title="Adjustment",
+        description="0: Will correct colors to remain within VAE bounds.\nOthervalues will shift the mean of the latent.\nRecommended range: -0.2->0.2",
+        default=0,
+    )
+    channel_selection: CHANNEL_SELECTIONS = InputField(
+        title="Channel Selection",
+        description=CHANNEL_DESCRIPTION,
+        default="All Channels",
+        input=Input.Direct,
+    )
+    expand_dynamic_range: bool = InputField(
+        title="Expand Dynamic Range",
+        description="If true, will expand the dynamic range of the latent channels to match the range of the VAE.",
+        default=True,
+        input=Input.Direct,
+    )
 
     def invoke(self, context: InvocationContext) -> ModuleDataOutput:
+
+        channels = CHANNEL_VALUES[self.channel_selection]
+
         module = ModuleData(
-            name="Color Correction module",
+            name="Color Guidance module",
             module_type="do_unet_step",
-            module="color_correction",
+            module="color_guidance",
             module_kwargs={
                 "sub_module": self.sub_module,
+                "upper_bound": 4 + self.adjustment,
+                "lower_bound": -4 + self.adjustment,
+                "channels": channels,
+                "expand_dynamic_range": self.expand_dynamic_range,
             },
         )
 
