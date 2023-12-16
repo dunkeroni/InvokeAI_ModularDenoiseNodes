@@ -1,4 +1,4 @@
-from .modular_denoise_latents import Modular_DenoiseLatentsInvocation
+from .modular_denoise_latents import Modular_DenoiseLatentsInvocation, AnalyzeLatentsInvocation
 from .do_unet_step_modules import (
     standard_do_unet_step,
     StandardStepModuleInvocation,

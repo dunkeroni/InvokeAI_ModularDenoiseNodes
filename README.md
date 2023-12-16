@@ -13,8 +13,11 @@ All modules can be found by searching "modular" in the workflow interface.
 | Cosine Decay Transfer | Smoothly changes over from one pipeline to another based on the remaining denoise value. Higher decay values swap over sooner. |
 | Linear Transfer | Smoothly changes over from one pipeline to another based on the current step index. |
 | Skip Residual Module | NOT YET IMPLEMENTED |
-| Latent Color Guidance | Fixes denoise process to keep color distribution near average. Fixes yellow drift in SDXL. Boost color range as well. |
+| Latent Color Guidance | CURRENTLY BROKEN. Fixes denoise process to keep color distribution near average. Fixes yellow drift in SDXL. Boost color range as well. |
 | Tiled Denoise | Splits the denoise process into multiple overlapping tiles. Adds generation time but reduces VRAM usage. Tile positions are maintained with a static minimum overlap. |
+| ScaleCrafter | NOT YET IMPLEMENTED |
 
 Modules can be connected into each other as sub-modules in a tree structure. Transfer modules will change the noise prediction from one pipeline to the other. Normal noise prediction modules will apply their sub-modules in their internal process. Example: MultiDiffusion will split the latent into tiles, and then use its sub-module pipeline to process each tile individually.
-![image](https://github.com/dunkeroni/InvokeAI_DemoFusion/assets/3298737/06fc0004-830b-4895-bf0e-b97976b612b1)
+![image](https://github.com/dunkeroni/InvokeAI_DemoFusion/assets/3298737/06fc0004-830b-4895-bf0e-b97976b612b1)  
+
+Update 10-15-2023: Fixed ControlNet inputs to work with Multidiffusion/Tile sampling. Dilated sampling has been changed to drop controlnet inputs.
