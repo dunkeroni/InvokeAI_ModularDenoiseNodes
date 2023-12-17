@@ -21,6 +21,7 @@ Update 10-15-2023: Fixed ControlNet inputs to work with Multidiffusion/Tile samp
 
 ## Planned/Prospective Changes:  
 | Node | Type | Usage |
+| --- | --- |
 | ScaleCrafter | module |A specialized implementation of dilated sampling to get high resolution results |
 | Skip Residual | module | instead of predicting noise, create a timestep% noised version of the input latent |
 | Adversarial Inpainting | module | Theoretically adds inpaint objects but replaces result with original where not significantly changed. Note to self: Noise Prediction = lerp(P, S, -wD) |
