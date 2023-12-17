@@ -843,3 +843,4 @@ class ColorGuidanceModuleInvocation(BaseInvocation):
         return ModuleDataOutput(
             module_data_output=module,
         )
+
