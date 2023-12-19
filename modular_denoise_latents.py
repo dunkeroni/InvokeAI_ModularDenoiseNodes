@@ -201,6 +201,7 @@ class Modular_StableDiffusionGeneratorPipeline(StableDiffusionGeneratorPipeline)
 
     def __init__(self, *args, **kwargs):
         self.custom_module_data = kwargs.pop("custom_module_data", None)
+        self.persistent_data = {} # for modules storing data between steps
         super().__init__(*args, **kwargs)
 
 
@@ -213,23 +214,24 @@ class Modular_StableDiffusionGeneratorPipeline(StableDiffusionGeneratorPipeline)
         step_index: int,
         total_step_count: int,
         custom_module_data: ModuleData,
-        control_data: List[ControlNetData] = None, # prevent kwargs from being passed to built-in module
         **kwargs,
     ) -> torch.Tensor:
         
         # default to standard diffusion pipeline result
         if custom_module_data is None:
+            down_block_additional_residuals = kwargs.pop("down_block_additional_residuals", None)
+            mid_block_additional_residual = kwargs.pop("mid_block_additional_residual", None)
+            down_intrablock_additional_residuals = kwargs.pop("down_intrablock_additional_residuals", None)
+
             uc_noise_pred, c_noise_pred = self.invokeai_diffuser.do_unet_step(
                 sample=sample,
-                timestep=t,  # TODO: debug how handled batched and non batched timesteps
+                timestep=t,
                 step_index=step_index,
                 total_step_count=total_step_count,
                 conditioning_data=conditioning_data,
-                # extra:
-                #down_block_additional_residuals=down_block_additional_residuals,  # for ControlNet
-                #mid_block_additional_residual=mid_block_additional_residual,  # for ControlNet
-                #down_intrablock_additional_residuals=down_intrablock_additional_residuals,  # for T2I-Adapter
-                **kwargs
+                down_block_additional_residuals=down_block_additional_residuals,  # for ControlNet
+                mid_block_additional_residual=mid_block_additional_residual,  # for ControlNet
+                down_intrablock_additional_residuals=down_intrablock_additional_residuals,  # for T2I-Adapter
             )
 
             guidance_scale = conditioning_data.guidance_scale
@@ -253,12 +255,58 @@ class Modular_StableDiffusionGeneratorPipeline(StableDiffusionGeneratorPipeline)
             step_index=step_index,
             total_step_count=total_step_count,
             module_kwargs=custom_module_data.module_kwargs,
-            control_data=control_data,
-            **kwargs,
+            **kwargs, #controlnet and t2i_adapter in kwargs, resolved later if updated
             ) # recursive case
 
+    def check_persistent_data(self, id: str, key: str):
+        """Check if persistent data entry exists for the given id and key. Create None entry if not."""
+        if id not in self.persistent_data:
+            self.persistent_data[id] = {}
+        if key not in self.persistent_data[id]:
+            self.persistent_data[id][key] = None
+            return None
+        return self.persistent_data[id][key]
+    
+    def set_persistent_data(self, id: str, key: str, value: Any):
+        """Set persistent data entry for the given id and key."""
+        if id not in self.persistent_data:
+            self.persistent_data[id] = {}
+        self.persistent_data[id][key] = value
+    
+    def get_t2i_intrablock(self, t2i_adapter_data: list[T2IAdapterData], step_index, total_step_count):
+        # Broken out of main step() function for easier calling later
+        down_intrablock_additional_residuals = None
+        if t2i_adapter_data is not None:
+            accum_adapter_state = None
+            for single_t2i_adapter_data in t2i_adapter_data:
+                # Determine the T2I-Adapter weights for the current denoising step.
+                first_t2i_adapter_step = math.floor(single_t2i_adapter_data.begin_step_percent * total_step_count)
+                last_t2i_adapter_step = math.ceil(single_t2i_adapter_data.end_step_percent * total_step_count)
+                t2i_adapter_weight = (
+                    single_t2i_adapter_data.weight[step_index]
+                    if isinstance(single_t2i_adapter_data.weight, list)
+                    else single_t2i_adapter_data.weight
+                )
+                if step_index < first_t2i_adapter_step or step_index > last_t2i_adapter_step:
+                    # If the current step is outside of the T2I-Adapter's begin/end step range, then set its weight to 0
+                    # so it has no effect.
+                    t2i_adapter_weight = 0.0
+
+                # Apply the t2i_adapter_weight, and accumulate.
+                if accum_adapter_state is None:
+                    # Handle the first T2I-Adapter.
+                    accum_adapter_state = [val * t2i_adapter_weight for val in single_t2i_adapter_data.adapter_state]
+                else:
+                    # Add to the previous adapter states.
+                    for idx, value in enumerate(single_t2i_adapter_data.adapter_state):
+                        accum_adapter_state[idx] += value * t2i_adapter_weight
+
+            # down_block_additional_residuals = accum_adapter_state
+            down_intrablock_additional_residuals = accum_adapter_state
         
-        #OVERRIDE to use custom_substep
+        return down_intrablock_additional_residuals
+
+    #OVERRIDE to use custom_substep
     def step(
         self,
         t: torch.Tensor,
@@ -317,34 +365,7 @@ class Modular_StableDiffusionGeneratorPipeline(StableDiffusionGeneratorPipeline)
                 conditioning_data=conditioning_data,
             )
         # elif t2i_adapter_data is not None:
-        if t2i_adapter_data is not None:
-            accum_adapter_state = None
-            for single_t2i_adapter_data in t2i_adapter_data:
-                # Determine the T2I-Adapter weights for the current denoising step.
-                first_t2i_adapter_step = math.floor(single_t2i_adapter_data.begin_step_percent * total_step_count)
-                last_t2i_adapter_step = math.ceil(single_t2i_adapter_data.end_step_percent * total_step_count)
-                t2i_adapter_weight = (
-                    single_t2i_adapter_data.weight[step_index]
-                    if isinstance(single_t2i_adapter_data.weight, list)
-                    else single_t2i_adapter_data.weight
-                )
-                if step_index < first_t2i_adapter_step or step_index > last_t2i_adapter_step:
-                    # If the current step is outside of the T2I-Adapter's begin/end step range, then set its weight to 0
-                    # so it has no effect.
-                    t2i_adapter_weight = 0.0
-
-                # Apply the t2i_adapter_weight, and accumulate.
-                if accum_adapter_state is None:
-                    # Handle the first T2I-Adapter.
-                    accum_adapter_state = [val * t2i_adapter_weight for val in single_t2i_adapter_data.adapter_state]
-                else:
-                    # Add to the previous adapter states.
-                    for idx, value in enumerate(single_t2i_adapter_data.adapter_state):
-                        accum_adapter_state[idx] += value * t2i_adapter_weight
-
-            # down_block_additional_residuals = accum_adapter_state
-            down_intrablock_additional_residuals = accum_adapter_state
-
+        down_intrablock_additional_residuals = self.get_t2i_intrablock(t2i_adapter_data, step_index, total_step_count)
 
         ################################ CUSTOM SUBSTEP  ################################
         noise_pred = self.custom_substep(
@@ -359,6 +380,7 @@ class Modular_StableDiffusionGeneratorPipeline(StableDiffusionGeneratorPipeline)
             mid_block_additional_residual=mid_block_additional_residual,  # for ControlNet
             down_intrablock_additional_residuals=down_intrablock_additional_residuals,  # for T2I-Adapter
             control_data=control_data, # passed down for tiling nodes to recalculate control blocks
+            t2i_adapter_data=t2i_adapter_data, # passed down for tiling nodes to recalculate t2i blocks
 
         )
         ################################################################################

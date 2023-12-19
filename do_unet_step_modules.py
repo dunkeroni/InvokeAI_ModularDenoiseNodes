@@ -2,7 +2,7 @@ from .modular_noise_prediction import module_noise_pred, get_noise_prediction_mo
 from .modular_denoise_latents import Modular_StableDiffusionGeneratorPipeline, ModuleData, ModuleDataOutput
 
 from invokeai.backend.stable_diffusion.diffusion.conditioning_data import ConditioningData
-from invokeai.backend.stable_diffusion.diffusers_pipeline import ControlNetData
+from invokeai.backend.stable_diffusion.diffusers_pipeline import ControlNetData, T2IAdapterData
 import torch
 from typing import Literal, Optional, Callable, List
 
@@ -40,21 +40,25 @@ def standard_do_unet_step(
     self: Modular_StableDiffusionGeneratorPipeline,
     sample: torch.Tensor,
     t: torch.Tensor,
-    conditioning_data: ConditioningData,  # TODO: type
+    conditioning_data: ConditioningData,
     step_index: int,
     total_step_count: int,
-    module_kwargs: dict | None,
-    control_data: List[ControlNetData] = None, #prevent from being passed in kwargs
+    down_block_additional_residuals: List | torch.Tensor | None = None,
+    mid_block_additional_residual: List | torch.Tensor | None = None,
+    down_intrablock_additional_residuals: List | torch.Tensor | None = None,
     **kwargs,
 ) -> torch.Tensor:
         # result from calling object's default pipeline
+        # extra kwargs get dropped here, so pass whatever you like down the chain
         uc_noise_pred, c_noise_pred = self.invokeai_diffuser.do_unet_step(
             sample=sample,
             timestep=t,
             conditioning_data=conditioning_data,
             step_index=step_index,
             total_step_count=total_step_count,
-            **kwargs,
+            down_block_additional_residuals=down_block_additional_residuals,  # for ControlNet
+            mid_block_additional_residual=mid_block_additional_residual,  # for ControlNet
+            down_intrablock_additional_residuals=down_intrablock_additional_residuals,  # for T2I-Adapter
         )
 
         guidance_scale = conditioning_data.guidance_scale
@@ -167,8 +171,11 @@ def multidiffusion_sampling(
     total_step_count: int,
     module_kwargs: dict | None,
     control_data: List[ControlNetData] = None,
-    down_block_additional_residuals: List | torch.Tensor | None = None,
-    mid_block_additional_residual: List | torch.Tensor | None = None,
+    t2i_adapter_data: list[T2IAdapterData] = None,
+    down_block_additional_residuals: List | torch.Tensor | None = None, # prevent from being passed in kwargs
+    mid_block_additional_residual: List | torch.Tensor | None = None, # prevent from being passed in kwargs
+    down_intrablock_additional_residuals: List | torch.Tensor | None = None, # prevent from being passed in kwargs
+
     **kwargs,
 ) -> torch.Tensor:
     latent_model_input = sample
@@ -225,8 +232,37 @@ def multidiffusion_sampling(
                 total_step_count=total_step_count,
                 conditioning_data=conditioning_data,
             )
+        
+        # crop t2i adapter data list into tiles
+        _t2i_adapter_data: list[T2IAdapterData] = []
+        _down_intrablock_additional_residuals = None
+        if t2i_adapter_data is not None:
 
-
+            for a in t2i_adapter_data:
+                tensorlist = a.adapter_state #for some reason this is a List and not a dict, despite what the class definition says!
+                _tensorlist = []
+                for tensor in tensorlist:
+                    scale = height // tensor.shape[2] # SDXL and 1.5 handle differently, one will be 1/2, 1/2, 1/4, 1/4, the other is 1/1, 1/2, 1/4, 1/8
+                    if enable_jitter:
+                        #hopefully 8 is a common factor of your jitter range and your latent size...
+                        _tensor = F.pad(tensor, (jitter_range//scale, jitter_range//scale, jitter_range//scale, jitter_range//scale), pad_mode, 0)
+                    else:
+                        _tensor = tensor
+                    _tensorlist.append(_tensor[:, :, h_start//scale:h_end//scale, w_start//scale:w_end//scale])
+                _t2i_adapter_data.append(T2IAdapterData(
+                    adapter_state=_tensorlist,
+                    weight=a.weight,
+                    begin_step_percent=a.begin_step_percent,
+                    end_step_percent=a.end_step_percent,
+                ))
+            
+            # then get new residuals for this tile
+            _down_intrablock_additional_residuals = self.get_t2i_intrablock(
+                t2i_adapter_data=_t2i_adapter_data,
+                step_index=step_index,
+                total_step_count=total_step_count,
+            )
+   
         noise_pred = sub_module(
             self=self,
             sample=latents_for_view,
@@ -237,7 +273,9 @@ def multidiffusion_sampling(
             module_kwargs=sub_module_kwargs,
             down_block_additional_residuals=_down_block_additional_residuals,
             mid_block_additional_residual=_mid_block_additional_residual,
+            down_intrablock_additional_residuals=_down_intrablock_additional_residuals,
             control_data=_control_data,
+            t2i_adapter_data=_t2i_adapter_data,
             **kwargs,
         )
 
@@ -265,7 +303,7 @@ MD_PAD_MODES = Literal[
     version="1.0.0",
 )
 class MultiDiffusionSamplingModuleInvocation(BaseInvocation):
-    """Module: MultiDiffusion tiled sampling"""
+    """Module: MultiDiffusion tiled sampling. NOT compatible with t2i adapters."""
     sub_module: Optional[ModuleData] = InputField(
         default=None,
         description="The custom module to use for each noise prediction tile. No connection will use the default pipeline.",
@@ -285,7 +323,7 @@ class MultiDiffusionSamplingModuleInvocation(BaseInvocation):
         description="The spacing between the starts of tiles during noise prediction (recommend=tile_size/2)",
         ge=64,
         default=256,
-        multiple_of=8,
+        multiple_of=64,
     )
     pad_mode: MD_PAD_MODES = InputField(
         title="Padding Mode",
@@ -343,6 +381,9 @@ def dilated_sampling(
     module_kwargs: dict | None,
     down_block_additional_residuals: List | torch.Tensor | None = None, #prevent from being passed in kwargs
     mid_block_additional_residual: List | torch.Tensor | None = None, #prevent from being passed in kwargs
+    down_intrablock_additional_residuals: List | torch.Tensor | None = None, #prevent from being passed in kwargs
+    control_data: List[ControlNetData] = None, #prevent from being passed in kwargs
+    t2i_adapter_data: list[T2IAdapterData] = None, #prevent from being passed in kwargs
     **kwargs,
 ) -> torch.Tensor:
     latent_model_input = sample
@@ -371,6 +412,9 @@ def dilated_sampling(
                 module_kwargs=sub_module_kwargs,
                 down_block_additional_residuals=None, # cannot pass controlnet to dilated sampling
                 mid_block_additional_residual=None, # cannot pass controlnet to dilated sampling
+                down_intrablock_additional_residuals=None, # cannot pass t2i adapter to dilated sampling
+                control_data=None,
+                t2i_adapter_data=None,
                 **kwargs,
             )
 
@@ -394,7 +438,7 @@ class DilatedSamplingModuleInvocation(BaseInvocation):
         ui_type=UIType.Any,
     )
     dilation_scale: int = InputField(
-        title="Dilation Scale",
+        title="Dilation Factor",
         description="The dilation scale to use when creating interlaced latents (e.g. '2' will split every 2x2 square among 4 latents)",
         ge=1,
         default=2,
@@ -678,45 +722,49 @@ class TiledDenoiseLatentsModuleInvocation(BaseInvocation):
         )
 
 ####################################################################################################
-# Color Guidance
+# SDXL Color Guidance
 # From: https://huggingface.co/blog/TimothyAlexisVass/explaining-the-sdxl-latent-space
 ####################################################################################################
 
 # Shrinking towards the mean (will also remove outliers)
 def soft_clamp_tensor(input_tensor: torch.Tensor, threshold=0.9, boundary=4, channels=[0, 1, 2]):
-    if max(abs(input_tensor.max()), abs(input_tensor.min())) < 4:
-        return input_tensor
     for channel in channels:
-        channel_tensor = input_tensor[:, channel, ...]
+        channel_tensor = input_tensor[:, channel]
+        if not max(abs(channel_tensor.max()), abs(channel_tensor.min())) < 4:
+            max_val = channel_tensor.max()
+            max_replace = ((channel_tensor - threshold) / (max_val - threshold)) * (boundary - threshold) + threshold
+            over_mask = (channel_tensor > threshold)
 
-        max_val = channel_tensor.max()
-        max_replace = ((channel_tensor - threshold) / (max_val - threshold)) * (boundary - threshold) + threshold
-        over_mask = (channel_tensor > threshold)
+            min_val = channel_tensor.min()
+            min_replace = ((channel_tensor + threshold) / (min_val + threshold)) * (-boundary + threshold) - threshold
+            under_mask = (channel_tensor < -threshold)
 
-        min_val = channel_tensor.min()
-        min_replace = ((channel_tensor + threshold) / (min_val + threshold)) * (-boundary + threshold) - threshold
-        under_mask = (channel_tensor < -threshold)
-
-        input_tensor[:, channel, ...] = torch.where(over_mask, max_replace, torch.where(under_mask, min_replace, channel_tensor))
+            input_tensor[:, channel] = torch.where(over_mask, max_replace, torch.where(under_mask, min_replace, channel_tensor))
 
     return input_tensor
 
 # Center tensor (balance colors)
-def center_tensor(input_tensor: torch.Tensor, channel_shift=1, channels=[0, 1, 2, 3], center = 0):
+def center_tensor(input_tensor, channel_shift=1, full_shift=1, channels=[0, 1, 2, 3]):
     for channel in channels:
-        input_tensor[0, channel] += (center - input_tensor[0, channel].mean()) * channel_shift
-    return input_tensor
+        input_tensor[0, channel] -= input_tensor[0, channel].mean() * channel_shift
+    return input_tensor - input_tensor.mean() * full_shift
 
 # Maximize/normalize tensor
-def normalize_tensor(input_tensor, lower_bound, upper_bound, channels=[0, 1, 2], expand_dynamic_range=False):
-    min_val = input_tensor.min()
-    max_val = input_tensor.max()
+def maximize_tensor(input_tensor, boundary=8, channels=[0, 1, 2]):
+    for channel in channels:
+        input_tensor[0, channel] *= boundary / input_tensor[0, channel].max()
+        #min_val = input_tensor[0, channel].min()
+        #max_val = input_tensor[0, channel].max()
 
-    if expand_dynamic_range:
-        normalization_factor = (upper_bound - lower_bound) / (max_val - min_val)
-    else:
-        normalization_factor = 1
-    input_tensor[0, channels] = (input_tensor[0, channels] - min_val) * normalization_factor + lower_bound
+        #get min max from 3 standard deviations from mean instead
+        mean = input_tensor[0, channel].mean()
+        std = input_tensor[0, channel].std()
+        min_val = mean - std * 2
+        max_val = mean + std * 2
+
+        #colors will always center around 0 for SDXL latents, but brightness/structure will not. Need to adjust this.
+        normalization_factor = boundary / max(abs(min_val), abs(max_val))
+        input_tensor[0, channel] *= normalization_factor
 
     return input_tensor
 
@@ -732,11 +780,11 @@ def color_guidance(
     **kwargs,
 ) -> torch.Tensor:
     sub_module, sub_module_kwargs = resolve_module(module_kwargs["sub_module"])
-    upper_bound: float = module_kwargs["upper_bound"]
-    lower_bound: float = module_kwargs["lower_bound"]
-    shift_strength: float = module_kwargs["shift_strength"]
+    # upper_bound: float = module_kwargs["upper_bound"]
+    # lower_bound: float = module_kwargs["lower_bound"]
+    # shift_strength: float = module_kwargs["shift_strength"]
     channels = module_kwargs["channels"]
-    expand_dynamic_range: bool = module_kwargs["expand_dynamic_range"]
+    # expand_dynamic_range: bool = module_kwargs["expand_dynamic_range"]
     timestep: float = t.item()
 
     noise_pred: torch.Tensor = sub_module(
@@ -750,45 +798,51 @@ def color_guidance(
         **kwargs,
     )
 
-    center = upper_bound * 0.5 + lower_bound * 0.5
-    print(f"Color Guidance: timestep={timestep}, center={center}, channels={channels}, lower_bound={lower_bound}, upper_bound={upper_bound}")
+    # center = upper_bound * 0.5 + lower_bound * 0.5
+    # print(f"Color Guidance: timestep={timestep}, center={center}, channels={channels}, lower_bound={lower_bound}, upper_bound={upper_bound}")
     # if timestep > 950:
     #     threshold = max(noise_pred.max(), abs(noise_pred.min())) * 0.998
     #     noise_pred = soft_clamp_tensor(noise_pred, threshold*0.998, threshold)
     # if timestep > 700:
     #     noise_pred = center_tensor(noise_pred, 0.8, channels=channels, center=center)
-    if timestep > 1: #do not shift again after the last step is completed
-        noise_pred = center_tensor(noise_pred, shift_strength, channels=channels, center=center)
-        noise_pred = normalize_tensor(noise_pred, lower_bound=lower_bound, upper_bound=upper_bound, channels=channels, expand_dynamic_range=expand_dynamic_range)
+    # if timestep > 1: #do not shift again after the last step is completed
+    #     noise_pred = center_tensor(noise_pred, shift_strength, channels=channels, center=center)
+    #     noise_pred = normalize_tensor(noise_pred, lower_bound=lower_bound, upper_bound=upper_bound, channels=channels, expand_dynamic_range=expand_dynamic_range)
+    # return noise_pred
+
+    # if timestep > 950:
+    #     threshold = max(noise_pred.max(), abs(noise_pred.min())) * 0.998
+    #     noise_pred = soft_clamp_tensor(noise_pred, threshold*0.998, threshold,channels=channels)
+    if timestep > 700:
+        noise_pred = center_tensor(noise_pred, 0.8, 0.8, channels=channels)
+    if timestep > 1 and timestep < 100:
+        noise_pred = center_tensor(noise_pred, 0.6, 1.0, channels=channels)
+        # noise_pred = maximize_tensor(noise_pred, channels=channels)
     return noise_pred
 
 CHANNEL_SELECTIONS = Literal[
     "All Channels",
-    "SDXL Colors Only",
+    "Colors Only",
     "L0: Brightness",
-    "L1: SD1 Highlights // SDXL Red->Cyan",
-    "L2: SD1 Red->Green // SDXL Magenta->Green",
-    "L3: SD1 Magenta->Yellow // SDXL Structure",
+    "L1: Red->Cyan",
+    "L2: Magenta->Green",
+    "L3: Structure",
 ]
 
 CHANNEL_VALUES = {
     "All Channels": [0, 1, 2, 3],
-    "SDXL Colors Only": [1, 2],
+    "Colors Only": [1, 2],
     "L0: Brightness": [0],
-    "L1: SD1 Highlights // SDXL Red->Cyan": [1],
-    "L2: SD1 Red->Green // SDXL Magenta->Green": [2],
-    "L3: SD1 Magenta->Yellow // SDXL Structure": [3],
+    "L1: Cyan->Red": [1],
+    "L2: Lime->Purple": [2],
+    "L3: Structure": [3],
 }
-
-CHANNEL_DESCRIPTION = """The channels to affect in the latent correction.\n
-SDXL: L1 = Red/Cyan, L2 = Magenta/Green, L3 = Structure\n
-SD1.5: L1 = Shadows, L2 = Red/Green, L3 = Magenta/Yellow"""
 
 @invocation("color_guidance_module",
     title="Color Guidance Module",
     tags=["module", "modular"],
     category="modular",
-    version="1.0.0",
+    version="1.0.1",
 )
 class ColorGuidanceModuleInvocation(BaseInvocation):
     """Module: Color Guidance (fix SDXL yellow bias)"""
@@ -799,28 +853,28 @@ class ColorGuidanceModuleInvocation(BaseInvocation):
         input=Input.Connection,
         ui_type=UIType.Any,
     )
-    adjustment: float = InputField(
-        title="Adjustment",
-        description="0: Will correct colors to remain within VAE bounds. Othervalues will shift the mean of the latent. Recommended range: -0.2->0.2",
-        default=0,
-    )
-    shift_strength: float = InputField(
-        title="Shift Strength",
-        description="How much to shift the latent towards the new mean each step.",
-        default=0.5,
-    )
+    # adjustment: float = InputField(
+    #     title="Adjustment",
+    #     description="0: Will correct colors to remain within VAE bounds. Othervalues will shift the mean of the latent. Recommended range: -0.2->0.2",
+    #     default=0,
+    # )
+    # shift_strength: float = InputField(
+    #     title="Shift Strength",
+    #     description="How much to shift the latent towards the new mean each step.",
+    #     default=0.5,
+    # )
     channel_selection: CHANNEL_SELECTIONS = InputField(
         title="Channel Selection",
-        description=CHANNEL_DESCRIPTION,
+        description="The channels to affect in the latent correction",
         default="All Channels",
         input=Input.Direct,
     )
-    expand_dynamic_range: bool = InputField(
-        title="Expand Dynamic Range",
-        description="If true, will expand the dynamic range of the latent channels to match the range of the VAE. Recommend FALSE when adjustment is not 0",
-        default=True,
-        input=Input.Direct,
-    )
+    # expand_dynamic_range: bool = InputField(
+    #     title="Expand Dynamic Range",
+    #     description="If true, will expand the dynamic range of the latent channels to match the range of the VAE. Recommend FALSE when adjustment is not 0",
+    #     default=True,
+    #     input=Input.Direct,
+    # )
 
     def invoke(self, context: InvocationContext) -> ModuleDataOutput:
 
@@ -832,11 +886,11 @@ class ColorGuidanceModuleInvocation(BaseInvocation):
             module="color_guidance",
             module_kwargs={
                 "sub_module": self.sub_module,
-                "upper_bound": 4 + self.adjustment,
-                "lower_bound": -4 + self.adjustment,
-                "shift_strength": self.shift_strength,
+                # "upper_bound": 4 + self.adjustment,
+                # "lower_bound": -4 + self.adjustment,
+                # "shift_strength": self.shift_strength,
                 "channels": channels,
-                "expand_dynamic_range": self.expand_dynamic_range,
+                # "expand_dynamic_range": self.expand_dynamic_range,
             },
         )
 

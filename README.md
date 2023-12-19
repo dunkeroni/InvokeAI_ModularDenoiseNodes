@@ -7,11 +7,11 @@ All modules can be found by searching "modular" in the workflow interface.
 | Node | Usage |
 | --- | --- |
 | Standard UNet Step Module | Calls up the default noise prediction behavior. Should be the same as not connecting a module input, unless someone forgets to check for that behavior. |
-| MultiDiffusion Module | Splits the denoise process into multiple overlapping tiles. Adds generation time but reduces VRAM usage. Randomly shifts tiles each step to prevent visible seams. The random movement requires an additional buffer to be added around the latent. The buffer padding mode can be selected on the node. |
+| MultiDiffusion Module | Splits the denoise process into multiple overlapping tiles. Adds generation time but reduces VRAM usage. Randomly shifts tiles each step to prevent visible seams. The random movement requires an additional buffer to be added around the latent. The buffer padding mode can be selected on the node. Breaks with t2i adapters. |
 | Dilated Sampling Module | Splits the denoise process into multiple interwoven latent tiles. Reduces VRAM usage. Dramatically reduces quality. Used in the DemoFusion process to maintain structure for MultiDiffusion via a cosine decay transfer. |
 | Cosine Decay Transfer | Smoothly changes over from one pipeline to another based on the remaining denoise value. Higher decay values swap over sooner. |
 | Linear Transfer | Smoothly changes over from one pipeline to another based on the current step index. |
-| Latent Color Guidance | CURRENTLY BROKEN. Fixes denoise process to keep color distribution near average. Fixes yellow drift in SDXL. Boost color range as well. |
+| Latent Color Guidance | CURRENTLY BROKEN. Still considering the best way to go about this. Adjusts denoise process to keep color distribution near average. Fixes yellow drift in SDXL. Boost color range as well. |
 | Tiled Denoise | Splits the denoise process into multiple overlapping tiles. Adds generation time but reduces VRAM usage. Tile positions are maintained with a static minimum overlap. |
 
 Modules can be connected into each other as sub-modules in a tree structure. Transfer modules will change the noise prediction from one pipeline to the other. Normal noise prediction modules will apply their sub-modules in their internal process. Example: MultiDiffusion will split the latent into tiles, and then use its sub-module pipeline to process each tile individually.
@@ -20,7 +20,7 @@ Modules can be connected into each other as sub-modules in a tree structure. Tra
 Update 10-15-2023: Fixed ControlNet inputs to work with Multidiffusion/Tile sampling. Dilated sampling has been changed to drop controlnet inputs.
 
 ## Planned/Prospective Changes:  
-| Node | Type | Usage |
+| Feature | Type | Usage |
 | --- | --- | --- |
 | ScaleCrafter | module |A specialized implementation of dilated sampling to get high resolution results |
 | Skip Residual | module | instead of predicting noise, create a timestep% noised version of the input latent |
