@@ -1,8 +1,9 @@
-from .modular_noise_prediction import module_noise_pred, get_noise_prediction_module
+from .modular_decorators import module_noise_pred, get_noise_prediction_module
 from .modular_denoise_latents import Modular_StableDiffusionGeneratorPipeline, ModuleData, ModuleDataOutput
 
 from invokeai.backend.stable_diffusion.diffusion.conditioning_data import ConditioningData
 from invokeai.backend.stable_diffusion.diffusers_pipeline import ControlNetData, T2IAdapterData
+from invokeai.app.invocations.primitives import LatentsField
 import torch
 from typing import Literal, Optional, Callable, List
 
@@ -485,7 +486,7 @@ def cosine_decay_transfer(
     sub_module_1, sub_module_1_kwargs = resolve_module(module_kwargs["sub_module_1"])
     sub_module_2, sub_module_2_kwargs = resolve_module(module_kwargs["sub_module_2"])
 
-    cosine_factor = 0.5 * (1 + torch.cos(torch.pi * (self.scheduler.config.num_train_timesteps - t) / self.scheduler.config.num_train_timesteps)).cpu()
+    cosine_factor = 0.5 * (1 + torch.cos(torch.pi * (self.scheduler.config.num_train_timesteps - t) / self.scheduler.config.num_train_timesteps))
     c2 = 1 - cosine_factor ** decay_rate
 
     pred_1 = sub_module_1(
@@ -898,3 +899,73 @@ class ColorGuidanceModuleInvocation(BaseInvocation):
             module_data_output=module,
         )
 
+
+####################################################################################################
+# Skip Residual 
+# From: https://ruoyidu.github.io/demofusion/demofusion.html
+####################################################################################################
+import time
+"""Instead of denoising, synthetically noise an input latent to the noise level of the current timestep."""
+@module_noise_pred("skip_residual")
+def skip_residual(
+    self: Modular_StableDiffusionGeneratorPipeline,
+    sample: torch.Tensor, #just to get the device
+    t: torch.Tensor,
+    module_kwargs: dict | None,
+    **kwargs,
+) -> torch.Tensor:
+    latents_input: dict = module_kwargs["latent_input"] #gets serialized into a dict instead of a LatentsField for some reason
+    noise_input: dict = module_kwargs["noise_input"] #gets serialized into a dict instead of a LatentsField for some reason
+    module_id = module_kwargs["module_id"]
+
+    #latents and noise are retrieved and stored in the pipeline object to avoid loading them from disk every step
+    persistent_latent = self.check_persistent_data(module_id, "latent") #the latent from the original input on the module
+    persistent_noise = self.check_persistent_data(module_id, "noise") #the noise from the original input on the module
+    if persistent_latent is None: #load on first call
+        persistent_latent = self.context.services.latents.get(latents_input["latents_name"]).to(sample.device)
+        self.set_persistent_data(module_id, "latent", persistent_latent)
+    if persistent_noise is None: #load on first call
+        persistent_noise = self.context.services.latents.get(noise_input["latents_name"]).to(sample.device)
+        self.set_persistent_data(module_id, "noise", persistent_noise)
+    print(t)
+    print(self.scheduler.config.num_train_timesteps)
+    print(((t) / self.scheduler.config.num_train_timesteps).item())
+    noised_latents = torch.lerp(persistent_latent, persistent_noise, ((t) / self.scheduler.config.num_train_timesteps).item())
+    #wait 200ms
+    time.sleep(0.2)
+    return noised_latents - persistent_latent
+
+@invocation("skip_residual_module",
+    title="Skip Residual Module",
+    tags=["module", "modular"],
+    category="modular",
+    version="1.0.0",
+)
+class SkipResidualModuleInvocation(BaseInvocation):
+    """Module: Skip Residual"""
+    latent_input: LatentsField = InputField(
+        title="Latent Input",
+        description="The base latent to use for the noise prediction (usually the same as the input for img2img)",
+        input=Input.Connection,
+    )
+    noise_input: LatentsField = InputField(
+        title="Noise Input",
+        description="The noise to add to the latent for the noise prediction (usually the same as the noise on the denoise latents node)",
+        input=Input.Connection,
+    )
+
+    def invoke(self, context: InvocationContext) -> ModuleDataOutput:
+        module = ModuleData(
+            name="Skip Residual module",
+            module_type="do_unet_step",
+            module="skip_residual",
+            module_kwargs={
+                "latent_input": self.latent_input,
+                "noise_input": self.noise_input,
+                "module_id": self.id,
+            },
+        )
+
+        return ModuleDataOutput(
+            module_data_output=module,
+        )

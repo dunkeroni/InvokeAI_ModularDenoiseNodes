@@ -36,13 +36,15 @@ from invokeai.backend.stable_diffusion.diffusers_pipeline import (
 from invokeai.app.invocations.primitives import IntegerOutput, LatentsField, ImageField, ImageOutput
 from pydantic import BaseModel, Field
 
-from .modular_noise_prediction import get_noise_prediction_module
+from .modular_decorators import get_noise_prediction_module
 
 import matplotlib.pyplot as plt
 from PIL import Image
 from invokeai.app.services.image_records.image_records_common import ImageCategory, ImageRecordChanges, ResourceOrigin
 from diffusers.schedulers.scheduling_utils import SchedulerMixin
 import numpy as np
+
+import inspect #TODO: get rid of this garbage
 
 @invocation("analyze_latents", title="Analyze Latents", tags=["analyze", "latents"], category="modular", version="1.0.0")
 class AnalyzeLatentsInvocation(BaseInvocation):
@@ -165,10 +167,6 @@ class Modular_DenoiseLatentsInvocation(DenoiseLatentsInvocation):
         ui_type=UIType.Any,
     )
 
-    #control: Optional[Union[ControlField, list[ControlField]]] = None # remove from inputs
-    #ip_adapter: Optional[Union[IPAdapterField, list[IPAdapterField]]] = None # remove from inputs
-    #t2i_adapter: Optional[Union[T2IAdapterField, list[T2IAdapterField]]] = None # remove from inputs
-
     # OVERRIDE to use Modular_StableDiffusionGeneratorPipeline
     def create_pipeline(
         self,
@@ -182,6 +180,18 @@ class Modular_DenoiseLatentsInvocation(DenoiseLatentsInvocation):
 
             def __init__(self):
                 self.config = FakeVae.FakeVaeConfig()
+        
+        """ NOTE: This is gross and bad, and I feel bad for using it. HOWEVER...
+            The modules might have data inputs that cannot be serialized (latents) so must be retrieved through the context.
+            The DenoiseLatentsInvocation only has its context in the invoke() function.
+            I don't want to maintain a custom override for invoke() on top of everything else here for compatibility reasons.
+            So, I'm using inspect.stack() to get the context from the calling function [which is invoke(self, context)].
+
+            If this ever gets merged into the main repo, just modify the create_pipeline() function to take a context argument.
+        """
+        for f in inspect.stack():
+            if "context" in f[0].f_locals:
+                context = f[0].f_locals["context"]
 
         return Modular_StableDiffusionGeneratorPipeline(
             vae=FakeVae(),  # TODO: oh...
@@ -193,6 +203,7 @@ class Modular_DenoiseLatentsInvocation(DenoiseLatentsInvocation):
             feature_extractor=None,
             requires_safety_checker=False,
             custom_module_data=self.module, #NEW field for custom module in pipeline
+            context=context, #NEW for when modules need to load external data
         )
 
 
@@ -202,6 +213,7 @@ class Modular_StableDiffusionGeneratorPipeline(StableDiffusionGeneratorPipeline)
     def __init__(self, *args, **kwargs):
         self.custom_module_data = kwargs.pop("custom_module_data", None)
         self.persistent_data = {} # for modules storing data between steps
+        self.context: InvocationContext = kwargs.pop("context", None)
         super().__init__(*args, **kwargs)
 
 
