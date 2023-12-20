@@ -39,16 +39,35 @@ Fallback module for the noise prediction pipeline. This module is used when no o
 @module_noise_pred("standard_unet_step_module")
 def standard_do_unet_step(
     self: Modular_StableDiffusionGeneratorPipeline,
+    latents: torch.Tensor,
     sample: torch.Tensor,
     t: torch.Tensor,
     conditioning_data: ConditioningData,
     step_index: int,
     total_step_count: int,
-    down_block_additional_residuals: List | torch.Tensor | None = None,
-    mid_block_additional_residual: List | torch.Tensor | None = None,
-    down_intrablock_additional_residuals: List | torch.Tensor | None = None,
+    control_data: List[ControlNetData] = None,
+    t2i_adapter_data: list[T2IAdapterData] = None,
     **kwargs,
 ) -> torch.Tensor:
+        
+
+        # Handle ControlNet(s)
+        down_block_additional_residuals = None
+        mid_block_additional_residual = None
+        down_intrablock_additional_residuals = None
+        if control_data is not None:
+            down_block_additional_residuals, mid_block_additional_residual = self.invokeai_diffuser.do_controlnet_step(
+                control_data=control_data,
+                sample=sample,
+                timestep=t[0],
+                step_index=step_index,
+                total_step_count=total_step_count,
+                conditioning_data=conditioning_data,
+            )
+        
+        # and T2I-Adapter(s)
+        down_intrablock_additional_residuals = self.get_t2i_intrablock(t2i_adapter_data, step_index, total_step_count)
+
         # result from calling object's default pipeline
         # extra kwargs get dropped here, so pass whatever you like down the chain
         uc_noise_pred, c_noise_pred = self.invokeai_diffuser.do_unet_step(
@@ -71,7 +90,17 @@ def standard_do_unet_step(
             c_noise_pred,
             guidance_scale,
         )
-        return noise_pred
+
+        # compute the previous noisy sample x_t -> x_t-1
+        step_output = self.scheduler.step(noise_pred, t[0], latents, **conditioning_data.scheduler_args)
+        # decrement the index counter, since this might not be the only parallel module
+        self.scheduler._step_index -= 1
+        # if self.scheduler.order == 2:
+        #     self.scheduler._index_counter[t[0].item()] -= 1
+        #     print(t[0].item())
+        #     print(self.scheduler._index_counter[t[0].item()])
+
+        return step_output
 
 @invocation("standard_unet_step_module",
     title="Standard UNet Step Module",
@@ -165,6 +194,7 @@ def crop_residuals(residual: List | torch.Tensor | None, view: tuple[int, int, i
 @module_noise_pred("multidiffusion_sampling")
 def multidiffusion_sampling(
     self: Modular_StableDiffusionGeneratorPipeline,
+    latents: torch.Tensor,
     sample: torch.Tensor,
     t: torch.Tensor,
     conditioning_data,  # TODO: type
@@ -173,10 +203,6 @@ def multidiffusion_sampling(
     module_kwargs: dict | None,
     control_data: List[ControlNetData] = None,
     t2i_adapter_data: list[T2IAdapterData] = None,
-    down_block_additional_residuals: List | torch.Tensor | None = None, # prevent from being passed in kwargs
-    mid_block_additional_residual: List | torch.Tensor | None = None, # prevent from being passed in kwargs
-    down_intrablock_additional_residuals: List | torch.Tensor | None = None, # prevent from being passed in kwargs
-
     **kwargs,
 ) -> torch.Tensor:
     latent_model_input = sample
@@ -191,20 +217,23 @@ def multidiffusion_sampling(
     views = get_views(height, width, stride=stride, window_size=window_size, random_jitter=enable_jitter)
     if enable_jitter:
         jitter_range = (window_size - stride) // 4
-        latents_ = F.pad(latent_model_input, (jitter_range, jitter_range, jitter_range, jitter_range), pad_mode, 0)
+        latents_pad = F.pad(latent_model_input, (jitter_range, jitter_range, jitter_range, jitter_range), pad_mode, 0)
+        original_latents_pad = F.pad(latents, (jitter_range, jitter_range, jitter_range, jitter_range), pad_mode, 0)
+
     else:
         jitter_range = 0
-        latents_ = latent_model_input
+        latents_pad = latent_model_input
 
-    count_local = torch.zeros_like(latents_)
-    value_local = torch.zeros_like(latents_)
+    count_local = torch.zeros_like(latents_pad)
+    value_local = torch.zeros_like(latents_pad)
+    pred_local = torch.zeros_like(latents_pad)
+    pred_count_local = torch.zeros_like(latents_pad)
     
     for j, view in enumerate(views):
         h_start, h_end, w_start, w_end = view
-        latents_for_view = latents_[:, :, h_start:h_end, w_start:w_end]
+        latents_for_view = latents_pad[:, :, h_start:h_end, w_start:w_end]
+        cropped_original_latents = original_latents_pad[:, :, h_start:h_end, w_start:w_end]
 
-        _down_block_additional_residuals = None
-        _mid_block_additional_residual = None
         _control_data = None
         # crop control data list into tiles
         if control_data is not None:
@@ -223,20 +252,9 @@ def multidiffusion_sampling(
                     control_mode=c.control_mode,
                     resize_mode=c.resize_mode,
                 ))
-
-            # then get new residuals for this tile
-            _down_block_additional_residuals, _mid_block_additional_residual = self.invokeai_diffuser.do_controlnet_step(
-                control_data=_control_data,
-                sample=latents_for_view, #cropped tile
-                timestep=t[0],
-                step_index=step_index,
-                total_step_count=total_step_count,
-                conditioning_data=conditioning_data,
-            )
         
         # crop t2i adapter data list into tiles
         _t2i_adapter_data: list[T2IAdapterData] = []
-        _down_intrablock_additional_residuals = None
         if t2i_adapter_data is not None:
 
             for a in t2i_adapter_data:
@@ -256,39 +274,47 @@ def multidiffusion_sampling(
                     begin_step_percent=a.begin_step_percent,
                     end_step_percent=a.end_step_percent,
                 ))
-            
-            # then get new residuals for this tile
-            _down_intrablock_additional_residuals = self.get_t2i_intrablock(
-                t2i_adapter_data=_t2i_adapter_data,
-                step_index=step_index,
-                total_step_count=total_step_count,
-            )
-   
-        noise_pred = sub_module(
+
+        step_output = sub_module(
             self=self,
+            latents=cropped_original_latents,
             sample=latents_for_view,
             t=t,
             conditioning_data=conditioning_data,
             step_index=step_index,
             total_step_count=total_step_count,
             module_kwargs=sub_module_kwargs,
-            down_block_additional_residuals=_down_block_additional_residuals,
-            mid_block_additional_residual=_mid_block_additional_residual,
-            down_intrablock_additional_residuals=_down_intrablock_additional_residuals,
             control_data=_control_data,
             t2i_adapter_data=_t2i_adapter_data,
             **kwargs,
         )
 
-        value_local[:, :, h_start:h_end, w_start:w_end] += noise_pred #step_output.prev_sample.detach().clone()
+        # get prediction from output
+        prev_sample = step_output.prev_sample.detach().clone()
+        value_local[:, :, h_start:h_end, w_start:w_end] += prev_sample #step_output.prev_sample.detach().clone()
         count_local[:, :, h_start:h_end, w_start:w_end] += 1
+
+        pred_original_sample = step_output.pred_original_sample.detach().clone()
+        pred_local[:, :, h_start:h_end, w_start:w_end] += pred_original_sample
+        pred_count_local[:, :, h_start:h_end, w_start:w_end] += 1
+
 
     value_local_crop = value_local[: ,:, jitter_range: jitter_range + height, jitter_range: jitter_range + width]
     count_local_crop = count_local[: ,:, jitter_range: jitter_range + height, jitter_range: jitter_range + width]
 
-    pred_multi = (value_local_crop / count_local_crop)
+    combined_prev_sample = (value_local_crop / count_local_crop)
 
-    return pred_multi
+    pred_local_crop = pred_local[: ,:, jitter_range: jitter_range + height, jitter_range: jitter_range + width]
+    pred_count_local_crop = pred_count_local[: ,:, jitter_range: jitter_range + height, jitter_range: jitter_range + width]
+
+
+    combined_pred_sample = (pred_local_crop / pred_count_local_crop)
+
+    #reinsert combined residuals to output
+    step_output.prev_sample = combined_prev_sample
+    step_output.pred_original_sample = combined_pred_sample
+
+    return step_output
 
 
 MD_PAD_MODES = Literal[
@@ -380,9 +406,6 @@ def dilated_sampling(
     step_index: int,
     total_step_count: int,
     module_kwargs: dict | None,
-    down_block_additional_residuals: List | torch.Tensor | None = None, #prevent from being passed in kwargs
-    mid_block_additional_residual: List | torch.Tensor | None = None, #prevent from being passed in kwargs
-    down_intrablock_additional_residuals: List | torch.Tensor | None = None, #prevent from being passed in kwargs
     control_data: List[ControlNetData] = None, #prevent from being passed in kwargs
     t2i_adapter_data: list[T2IAdapterData] = None, #prevent from being passed in kwargs
     **kwargs,
@@ -411,9 +434,6 @@ def dilated_sampling(
                 step_index=step_index,
                 total_step_count=total_step_count,
                 module_kwargs=sub_module_kwargs,
-                down_block_additional_residuals=None, # cannot pass controlnet to dilated sampling
-                mid_block_additional_residual=None, # cannot pass controlnet to dilated sampling
-                down_intrablock_additional_residuals=None, # cannot pass t2i adapter to dilated sampling
                 control_data=None,
                 t2i_adapter_data=None,
                 **kwargs,
@@ -474,11 +494,7 @@ class DilatedSamplingModuleInvocation(BaseInvocation):
 @module_noise_pred("cosine_decay_transfer")
 def cosine_decay_transfer(
     self: Modular_StableDiffusionGeneratorPipeline,
-    sample: torch.Tensor,
     t: torch.Tensor,
-    conditioning_data,  # TODO: type
-    step_index: int,
-    total_step_count: int,
     module_kwargs: dict | None,
     **kwargs,
 ) -> torch.Tensor:
@@ -491,22 +507,14 @@ def cosine_decay_transfer(
 
     pred_1 = sub_module_1(
         self=self,
-        sample=sample,
         t=t,
-        conditioning_data=conditioning_data,
-        step_index=step_index,
-        total_step_count=total_step_count,
         module_kwargs=sub_module_1_kwargs,
         **kwargs,
     )
 
     pred_2 = sub_module_2(
         self=self,
-        sample=sample,
         t=t,
-        conditioning_data=conditioning_data,
-        step_index=step_index,
-        total_step_count=total_step_count,
         module_kwargs=sub_module_2_kwargs,
         **kwargs,
     )
@@ -565,11 +573,7 @@ class CosineDecayTransferModuleInvocation(BaseInvocation):
 @module_noise_pred("linear_transfer")
 def linear_transfer(
     self: Modular_StableDiffusionGeneratorPipeline,
-    sample: torch.Tensor,
     t: torch.Tensor,
-    conditioning_data,  # TODO: type
-    step_index: int,
-    total_step_count: int,
     module_kwargs: dict | None,
     **kwargs,
 ) -> torch.Tensor:
@@ -584,11 +588,7 @@ def linear_transfer(
     if linear_factor < 1:
         pred_1 = sub_module_1(
             self=self,
-            sample=sample,
             t=t,
-            conditioning_data=conditioning_data,
-            step_index=step_index,
-            total_step_count=total_step_count,
             module_kwargs=sub_module_1_kwargs,
             **kwargs,
         )
@@ -596,11 +596,7 @@ def linear_transfer(
     if linear_factor > 0:
         pred_2 = sub_module_2(
             self=self,
-            sample=sample,
             t=t,
-            conditioning_data=conditioning_data,
-            step_index=step_index,
-            total_step_count=total_step_count,
             module_kwargs=sub_module_2_kwargs,
             **kwargs,
         )
@@ -772,11 +768,7 @@ def maximize_tensor(input_tensor, boundary=8, channels=[0, 1, 2]):
 @module_noise_pred("color_guidance")
 def color_guidance(
     self: Modular_StableDiffusionGeneratorPipeline,
-    sample: torch.Tensor,
     t: torch.Tensor,
-    conditioning_data,  # TODO: type
-    step_index: int,
-    total_step_count: int,
     module_kwargs: dict | None,
     **kwargs,
 ) -> torch.Tensor:
@@ -790,11 +782,7 @@ def color_guidance(
 
     noise_pred: torch.Tensor = sub_module(
         self=self,
-        sample=sample,
         t=t,
-        conditioning_data=conditioning_data,
-        step_index=step_index,
-        total_step_count=total_step_count,
         module_kwargs=sub_module_kwargs,
         **kwargs,
     )

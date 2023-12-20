@@ -1,6 +1,13 @@
 Previously this repository was an implementation of DemoFusion for InvokeAI. It has now been generalized to allow more custom pipeline modifications.  
 DemoFusion paper: https://ruoyidu.github.io/demofusion/demofusion.html  
 
+## Scope Refactor:
+There are some limitations to the way these modules work right now. Currently each module passes down the residuals of CNet and T2I, but then recrops and recalculates the data inputs for tile denoising pipelines which adds redundant steps. Additionally the implementation is acting on the noise prediction stage (estimate t+1) and not the step result (estimate t-1). That works for most things so far, but has a reverse effect on color correction/guidance and does not allow for skip residual.  
+
+The Fix: Shift the scope of the module replacement up one layer. Modules will pass the CNet/T2I Data which will be resolved late after all crops and modifications. Modules will return (t-1) final step output instead of noise prediction. Any processes that need to make further insertions to the pipeline will need to account for their adjustments and hand back a corrected (t-1).  
+
+Modules will not interact with or affect IP-Adapter data for the time being. It could be argued that cropping IP Adapter inputs would be helpful, but I think doing so would have detrimental and unpredictable effects on the outputs from a user perspective.
+
 # Modular Denoise Latents
 The "Modular Denoise Latents" node has a "Custom Modules" input that accepts inputs from the modular nodes. These modules override the default behavior of the noise prediction in the diffusion pipeline.  
 All modules can be found by searching "modular" in the workflow interface.  
