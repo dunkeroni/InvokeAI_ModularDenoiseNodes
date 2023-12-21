@@ -6,19 +6,16 @@ from invokeai.backend.stable_diffusion.diffusers_pipeline import ControlNetData,
 from invokeai.app.invocations.primitives import LatentsField
 import torch
 from typing import Literal, Optional, Callable, List
+import random
+import torch.nn.functional as F
 
 from invokeai.app.invocations.baseinvocation import (
     BaseInvocation,
-    BaseInvocationOutput,
     Input,
     InputField,
     InvocationContext,
-    OutputField,
     UIType,
-    WithMetadata,
-    WithWorkflow,
     invocation,
-    invocation_output,
 )
 
 
@@ -39,20 +36,39 @@ Fallback module for the noise prediction pipeline. This module is used when no o
 @module_noise_pred("standard_unet_step_module")
 def standard_do_unet_step(
     self: Modular_StableDiffusionGeneratorPipeline,
-    sample: torch.Tensor,
+    latents: torch.Tensor, #result of previous step
     t: torch.Tensor,
     conditioning_data: ConditioningData,
     step_index: int,
     total_step_count: int,
-    down_block_additional_residuals: List | torch.Tensor | None = None,
-    mid_block_additional_residual: List | torch.Tensor | None = None,
-    down_intrablock_additional_residuals: List | torch.Tensor | None = None,
+    control_data: List[ControlNetData] = None,
+    t2i_adapter_data: list[T2IAdapterData] = None,
     **kwargs,
-) -> torch.Tensor:
+) -> tuple[torch.Tensor, torch.Tensor]:
+        timestep = t[0]
+        latent_model_input = self.scheduler.scale_model_input(latents, timestep)
+        
+        # Handle ControlNet(s)
+        down_block_additional_residuals = None
+        mid_block_additional_residual = None
+        down_intrablock_additional_residuals = None
+        if control_data is not None:
+            down_block_additional_residuals, mid_block_additional_residual = self.invokeai_diffuser.do_controlnet_step(
+                control_data=control_data,
+                sample=latent_model_input,
+                timestep=timestep,
+                step_index=step_index,
+                total_step_count=total_step_count,
+                conditioning_data=conditioning_data,
+            )
+        
+        # and T2I-Adapter(s)
+        down_intrablock_additional_residuals = self.get_t2i_intrablock(t2i_adapter_data, step_index, total_step_count)
+
         # result from calling object's default pipeline
         # extra kwargs get dropped here, so pass whatever you like down the chain
         uc_noise_pred, c_noise_pred = self.invokeai_diffuser.do_unet_step(
-            sample=sample,
+            sample=latent_model_input,
             timestep=t,
             conditioning_data=conditioning_data,
             step_index=step_index,
@@ -71,7 +87,8 @@ def standard_do_unet_step(
             c_noise_pred,
             guidance_scale,
         )
-        return noise_pred
+
+        return noise_pred, latents
 
 @invocation("standard_unet_step_module",
     title="Standard UNet Step Module",
@@ -98,8 +115,6 @@ class StandardStepModuleInvocation(BaseInvocation):
 # MultiDiffusion Sampling
 # From: https://multidiffusion.github.io/
 ####################################################################################################
-import random
-import torch.nn.functional as F
 def get_views(height, width, window_size=128, stride=64, random_jitter=False):
     # Here, we define the mappings F_i (see Eq. 7 in the MultiDiffusion paper https://arxiv.org/abs/2302.08113)
     # if panorama's height/width < window_size, num_blocks of height/width should return 1
@@ -165,23 +180,14 @@ def crop_residuals(residual: List | torch.Tensor | None, view: tuple[int, int, i
 @module_noise_pred("multidiffusion_sampling")
 def multidiffusion_sampling(
     self: Modular_StableDiffusionGeneratorPipeline,
-    sample: torch.Tensor,
-    t: torch.Tensor,
-    conditioning_data,  # TODO: type
-    step_index: int,
-    total_step_count: int,
+    latents: torch.Tensor,
     module_kwargs: dict | None,
     control_data: List[ControlNetData] = None,
     t2i_adapter_data: list[T2IAdapterData] = None,
-    down_block_additional_residuals: List | torch.Tensor | None = None, # prevent from being passed in kwargs
-    mid_block_additional_residual: List | torch.Tensor | None = None, # prevent from being passed in kwargs
-    down_intrablock_additional_residuals: List | torch.Tensor | None = None, # prevent from being passed in kwargs
-
     **kwargs,
-) -> torch.Tensor:
-    latent_model_input = sample
-    height = latent_model_input.shape[2]
-    width = latent_model_input.shape[3]
+) -> tuple[torch.Tensor, torch.Tensor]:
+    height = latents.shape[2]
+    width = latents.shape[3]
     window_size = module_kwargs["tile_size"] // 8
     stride = module_kwargs["stride"] // 8
     pad_mode = module_kwargs["pad_mode"]
@@ -191,20 +197,21 @@ def multidiffusion_sampling(
     views = get_views(height, width, stride=stride, window_size=window_size, random_jitter=enable_jitter)
     if enable_jitter:
         jitter_range = (window_size - stride) // 4
-        latents_ = F.pad(latent_model_input, (jitter_range, jitter_range, jitter_range, jitter_range), pad_mode, 0)
+        latents_pad = F.pad(latents, (jitter_range, jitter_range, jitter_range, jitter_range), pad_mode, 0)
+
     else:
         jitter_range = 0
-        latents_ = latent_model_input
+        latents_pad = latents
 
-    count_local = torch.zeros_like(latents_)
-    value_local = torch.zeros_like(latents_)
+    count_local = torch.zeros_like(latents_pad)
+    value_local = torch.zeros_like(latents_pad)
+    count_local_latents = torch.zeros_like(latents_pad)
+    value_local_latents = torch.zeros_like(latents_pad)
     
     for j, view in enumerate(views):
         h_start, h_end, w_start, w_end = view
-        latents_for_view = latents_[:, :, h_start:h_end, w_start:w_end]
+        latents_for_view = latents_pad[:, :, h_start:h_end, w_start:w_end]
 
-        _down_block_additional_residuals = None
-        _mid_block_additional_residual = None
         _control_data = None
         # crop control data list into tiles
         if control_data is not None:
@@ -223,20 +230,9 @@ def multidiffusion_sampling(
                     control_mode=c.control_mode,
                     resize_mode=c.resize_mode,
                 ))
-
-            # then get new residuals for this tile
-            _down_block_additional_residuals, _mid_block_additional_residual = self.invokeai_diffuser.do_controlnet_step(
-                control_data=_control_data,
-                sample=latents_for_view, #cropped tile
-                timestep=t[0],
-                step_index=step_index,
-                total_step_count=total_step_count,
-                conditioning_data=conditioning_data,
-            )
         
         # crop t2i adapter data list into tiles
         _t2i_adapter_data: list[T2IAdapterData] = []
-        _down_intrablock_additional_residuals = None
         if t2i_adapter_data is not None:
 
             for a in t2i_adapter_data:
@@ -256,39 +252,31 @@ def multidiffusion_sampling(
                     begin_step_percent=a.begin_step_percent,
                     end_step_percent=a.end_step_percent,
                 ))
-            
-            # then get new residuals for this tile
-            _down_intrablock_additional_residuals = self.get_t2i_intrablock(
-                t2i_adapter_data=_t2i_adapter_data,
-                step_index=step_index,
-                total_step_count=total_step_count,
-            )
-   
-        noise_pred = sub_module(
+
+        noise_pred, original_view_latents = sub_module(
             self=self,
-            sample=latents_for_view,
-            t=t,
-            conditioning_data=conditioning_data,
-            step_index=step_index,
-            total_step_count=total_step_count,
+            latents=latents_for_view,
             module_kwargs=sub_module_kwargs,
-            down_block_additional_residuals=_down_block_additional_residuals,
-            mid_block_additional_residual=_mid_block_additional_residual,
-            down_intrablock_additional_residuals=_down_intrablock_additional_residuals,
             control_data=_control_data,
             t2i_adapter_data=_t2i_adapter_data,
             **kwargs,
         )
 
+        # get prediction from output
         value_local[:, :, h_start:h_end, w_start:w_end] += noise_pred #step_output.prev_sample.detach().clone()
         count_local[:, :, h_start:h_end, w_start:w_end] += 1
+        value_local_latents[:, :, h_start:h_end, w_start:w_end] += original_view_latents
+        count_local_latents[:, :, h_start:h_end, w_start:w_end] += 1
 
     value_local_crop = value_local[: ,:, jitter_range: jitter_range + height, jitter_range: jitter_range + width]
     count_local_crop = count_local[: ,:, jitter_range: jitter_range + height, jitter_range: jitter_range + width]
+    value_local_latents_crop = value_local_latents[: ,:, jitter_range: jitter_range + height, jitter_range: jitter_range + width]
+    count_local_latents_crop = count_local_latents[: ,:, jitter_range: jitter_range + height, jitter_range: jitter_range + width]
 
-    pred_multi = (value_local_crop / count_local_crop)
+    combined_noise_pred = (value_local_crop / count_local_crop)
+    combined_latents = (value_local_latents_crop / count_local_latents_crop)
 
-    return pred_multi
+    return combined_noise_pred, combined_latents
 
 
 MD_PAD_MODES = Literal[
@@ -374,20 +362,13 @@ def gaussian_filter(latents, kernel_size=3, sigma=1.0):
 @module_noise_pred("dilated_sampling")
 def dilated_sampling(
     self: Modular_StableDiffusionGeneratorPipeline,
-    sample: torch.Tensor,
+    latents: torch.Tensor,
     t: torch.Tensor,
-    conditioning_data,  # TODO: type
-    step_index: int,
-    total_step_count: int,
     module_kwargs: dict | None,
-    down_block_additional_residuals: List | torch.Tensor | None = None, #prevent from being passed in kwargs
-    mid_block_additional_residual: List | torch.Tensor | None = None, #prevent from being passed in kwargs
-    down_intrablock_additional_residuals: List | torch.Tensor | None = None, #prevent from being passed in kwargs
     control_data: List[ControlNetData] = None, #prevent from being passed in kwargs
     t2i_adapter_data: list[T2IAdapterData] = None, #prevent from being passed in kwargs
     **kwargs,
-) -> torch.Tensor:
-    latent_model_input = sample
+) -> tuple[torch.Tensor, torch.Tensor]:
     gaussian_decay_rate = module_kwargs["gaussian_decay_rate"]
     dilation_scale = module_kwargs["dilation_scale"]
     cosine_factor = 0.5 * (1 + torch.cos(torch.pi * (self.scheduler.config.num_train_timesteps - t) / self.scheduler.config.num_train_timesteps)).cpu()
@@ -395,25 +376,20 @@ def dilated_sampling(
 
     sub_module, sub_module_kwargs = resolve_module(module_kwargs["sub_module"])
         
-    total_noise_pred = torch.zeros_like(latent_model_input)
-    std_, mean_ = latent_model_input.std(), latent_model_input.mean()
-    blurred_latents = gaussian_filter(latent_model_input, kernel_size=(2*dilation_scale-1), sigma=sigma)
+    total_noise_pred = torch.zeros_like(latents)
+    total_original_latents = torch.zeros_like(latents)
+    std_, mean_ = latents.std(), latents.mean()
+    blurred_latents = gaussian_filter(latents, kernel_size=(2*dilation_scale-1), sigma=sigma)
     blurred_latents = (blurred_latents - blurred_latents.mean()) / blurred_latents.std() * std_ + mean_
     for h in range(dilation_scale):
         for w in range(dilation_scale):
             #get interlaced subsample
             subsample = blurred_latents[:, :, h::dilation_scale, w::dilation_scale]
-            noise_pred = sub_module(
+            noise_pred, original_latents = sub_module(
                 self=self,
-                sample=subsample,
+                latents=subsample,
                 t=t,
-                conditioning_data=conditioning_data,
-                step_index=step_index,
-                total_step_count=total_step_count,
                 module_kwargs=sub_module_kwargs,
-                down_block_additional_residuals=None, # cannot pass controlnet to dilated sampling
-                mid_block_additional_residual=None, # cannot pass controlnet to dilated sampling
-                down_intrablock_additional_residuals=None, # cannot pass t2i adapter to dilated sampling
                 control_data=None,
                 t2i_adapter_data=None,
                 **kwargs,
@@ -421,7 +397,8 @@ def dilated_sampling(
 
             # insert subsample noise prediction into total tensor
             total_noise_pred[:, :, h::dilation_scale, w::dilation_scale] = noise_pred
-    return total_noise_pred
+            total_original_latents[:, :, h::dilation_scale, w::dilation_scale] = original_latents
+    return total_noise_pred, total_original_latents
 
 @invocation("dilated_sampling_module",
     title="Dilated Sampling Module",
@@ -474,14 +451,10 @@ class DilatedSamplingModuleInvocation(BaseInvocation):
 @module_noise_pred("cosine_decay_transfer")
 def cosine_decay_transfer(
     self: Modular_StableDiffusionGeneratorPipeline,
-    sample: torch.Tensor,
     t: torch.Tensor,
-    conditioning_data,  # TODO: type
-    step_index: int,
-    total_step_count: int,
     module_kwargs: dict | None,
     **kwargs,
-) -> torch.Tensor:
+) -> tuple[torch.Tensor, torch.Tensor]:
     decay_rate = module_kwargs["decay_rate"]
     sub_module_1, sub_module_1_kwargs = resolve_module(module_kwargs["sub_module_1"])
     sub_module_2, sub_module_2_kwargs = resolve_module(module_kwargs["sub_module_2"])
@@ -489,30 +462,23 @@ def cosine_decay_transfer(
     cosine_factor = 0.5 * (1 + torch.cos(torch.pi * (self.scheduler.config.num_train_timesteps - t) / self.scheduler.config.num_train_timesteps))
     c2 = 1 - cosine_factor ** decay_rate
 
-    pred_1 = sub_module_1(
+    pred_1, latents_1 = sub_module_1(
         self=self,
-        sample=sample,
         t=t,
-        conditioning_data=conditioning_data,
-        step_index=step_index,
-        total_step_count=total_step_count,
         module_kwargs=sub_module_1_kwargs,
         **kwargs,
     )
 
-    pred_2 = sub_module_2(
+    pred_2, latents_2 = sub_module_2(
         self=self,
-        sample=sample,
         t=t,
-        conditioning_data=conditioning_data,
-        step_index=step_index,
-        total_step_count=total_step_count,
         module_kwargs=sub_module_2_kwargs,
         **kwargs,
     )
     total_noise_pred = torch.lerp(pred_1, pred_2, c2.to(pred_1.device, dtype=pred_1.dtype))
+    total_original_latents = torch.lerp(latents_1, latents_2, c2.to(latents_1.device, dtype=latents_1.dtype))
 
-    return total_noise_pred
+    return total_noise_pred, total_original_latents
 
 @invocation("cosine_decay_transfer_module",
     title="Cosine Decay Transfer",
@@ -565,14 +531,11 @@ class CosineDecayTransferModuleInvocation(BaseInvocation):
 @module_noise_pred("linear_transfer")
 def linear_transfer(
     self: Modular_StableDiffusionGeneratorPipeline,
-    sample: torch.Tensor,
     t: torch.Tensor,
-    conditioning_data,  # TODO: type
     step_index: int,
-    total_step_count: int,
     module_kwargs: dict | None,
     **kwargs,
-) -> torch.Tensor:
+) -> tuple[torch.Tensor, torch.Tensor]:
     start_step: int = module_kwargs["start_step"]
     end_step: int = module_kwargs["end_step"]
     sub_module_1, sub_module_1_kwargs = resolve_module(module_kwargs["sub_module_1"])
@@ -582,40 +545,34 @@ def linear_transfer(
     linear_factor = min(max(linear_factor, 0), 1)
 
     if linear_factor < 1:
-        pred_1 = sub_module_1(
+        pred_1, latents_1 = sub_module_1(
             self=self,
-            sample=sample,
             t=t,
-            conditioning_data=conditioning_data,
             step_index=step_index,
-            total_step_count=total_step_count,
             module_kwargs=sub_module_1_kwargs,
             **kwargs,
         )
 
     if linear_factor > 0:
-        pred_2 = sub_module_2(
+        pred_2, latents_2 = sub_module_2(
             self=self,
-            sample=sample,
             t=t,
-            conditioning_data=conditioning_data,
             step_index=step_index,
-            total_step_count=total_step_count,
             module_kwargs=sub_module_2_kwargs,
             **kwargs,
         )
     
     if linear_factor == 0:
         total_noise_pred = pred_1 # no need to lerp
-        print(f"Linear Transfer: pred_1")
+        total_original_latents = latents_1
     elif linear_factor == 1:
         total_noise_pred = pred_2 # no need to lerp
-        print(f"Linear Transfer: pred_2")
+        total_original_latents = latents_2
     else:
         total_noise_pred = torch.lerp(pred_1, pred_2, linear_factor)
-        print(f"Linear Transfer: lerp(pred_1, pred_2, {linear_factor})")
+        total_original_latents = torch.lerp(latents_1, latents_2, linear_factor)
 
-    return total_noise_pred
+    return total_noise_pred, total_original_latents
 
 @invocation("linear_transfer_module",
     title="Linear Transfer",
@@ -748,12 +705,12 @@ def soft_clamp_tensor(input_tensor: torch.Tensor, threshold=0.9, boundary=4, cha
 def center_tensor(input_tensor, channel_shift=1, full_shift=1, channels=[0, 1, 2, 3]):
     for channel in channels:
         input_tensor[0, channel] -= input_tensor[0, channel].mean() * channel_shift
-    return input_tensor - input_tensor.mean() * full_shift
+    return input_tensor# - input_tensor.mean() * full_shift
 
 # Maximize/normalize tensor
-def maximize_tensor(input_tensor, boundary=8, channels=[0, 1, 2]):
+def maximize_tensor(input_tensor, boundary=4, channels=[0, 1, 2]):
     for channel in channels:
-        input_tensor[0, channel] *= boundary / input_tensor[0, channel].max()
+        input_tensor[0, channel] *= (boundary/2) / input_tensor[0, channel].max()
         #min_val = input_tensor[0, channel].min()
         #max_val = input_tensor[0, channel].max()
 
@@ -772,32 +729,20 @@ def maximize_tensor(input_tensor, boundary=8, channels=[0, 1, 2]):
 @module_noise_pred("color_guidance")
 def color_guidance(
     self: Modular_StableDiffusionGeneratorPipeline,
-    sample: torch.Tensor,
-    t: torch.Tensor,
-    conditioning_data,  # TODO: type
+    latents: torch.Tensor,
     step_index: int,
-    total_step_count: int,
+    t: torch.Tensor,
     module_kwargs: dict | None,
     **kwargs,
-) -> torch.Tensor:
+) -> tuple[torch.Tensor, torch.Tensor]:
     sub_module, sub_module_kwargs = resolve_module(module_kwargs["sub_module"])
-    # upper_bound: float = module_kwargs["upper_bound"]
-    # lower_bound: float = module_kwargs["lower_bound"]
-    # shift_strength: float = module_kwargs["shift_strength"]
+    expand_dynamic_range = module_kwargs["expand_dynamic_range"]
+    dynamic_range = module_kwargs["dynamic_range"]
+    start_step = module_kwargs["start_step"]
+    end_step = module_kwargs["end_step"]
     channels = module_kwargs["channels"]
     # expand_dynamic_range: bool = module_kwargs["expand_dynamic_range"]
     timestep: float = t.item()
-
-    noise_pred: torch.Tensor = sub_module(
-        self=self,
-        sample=sample,
-        t=t,
-        conditioning_data=conditioning_data,
-        step_index=step_index,
-        total_step_count=total_step_count,
-        module_kwargs=sub_module_kwargs,
-        **kwargs,
-    )
 
     # center = upper_bound * 0.5 + lower_bound * 0.5
     # print(f"Color Guidance: timestep={timestep}, center={center}, channels={channels}, lower_bound={lower_bound}, upper_bound={upper_bound}")
@@ -814,19 +759,28 @@ def color_guidance(
     # if timestep > 950:
     #     threshold = max(noise_pred.max(), abs(noise_pred.min())) * 0.998
     #     noise_pred = soft_clamp_tensor(noise_pred, threshold*0.998, threshold,channels=channels)
-    if timestep > 700:
-        noise_pred = center_tensor(noise_pred, 0.8, 0.8, channels=channels)
-    if timestep > 1 and timestep < 100:
-        noise_pred = center_tensor(noise_pred, 0.6, 1.0, channels=channels)
-        # noise_pred = maximize_tensor(noise_pred, channels=channels)
-    return noise_pred
+    if timestep >= start_step and (timestep <= end_step or end_step == -1):
+        latents = center_tensor(latents, 0.6, 1.0, channels=channels)
+        if expand_dynamic_range:
+            latents = maximize_tensor(latents, boundary=dynamic_range, channels=channels)
+    
+    noise_pred, original_latents = sub_module(
+        self=self,
+        latents=latents,
+        t=t,
+        step_index=step_index,
+        module_kwargs=sub_module_kwargs,
+        **kwargs,
+    )
+
+    return noise_pred, original_latents
 
 CHANNEL_SELECTIONS = Literal[
     "All Channels",
     "Colors Only",
     "L0: Brightness",
     "L1: Red->Cyan",
-    "L2: Magenta->Green",
+    "L2: Lime->Purple",
     "L3: Structure",
 ]
 
@@ -854,28 +808,35 @@ class ColorGuidanceModuleInvocation(BaseInvocation):
         input=Input.Connection,
         ui_type=UIType.Any,
     )
-    # adjustment: float = InputField(
-    #     title="Adjustment",
-    #     description="0: Will correct colors to remain within VAE bounds. Othervalues will shift the mean of the latent. Recommended range: -0.2->0.2",
-    #     default=0,
-    # )
-    # shift_strength: float = InputField(
-    #     title="Shift Strength",
-    #     description="How much to shift the latent towards the new mean each step.",
-    #     default=0.5,
-    # )
+    start_step: int = InputField(
+        title="Start Step",
+        description="The step index at which to start applying color correction",
+        ge=0,
+        default=0,
+    )
+    end_step: int = InputField(
+        title="End Step",
+        description="The step index at which to stop applying color correction. -1 to never stop.",
+        ge=-1,
+        default=-1,
+    )
     channel_selection: CHANNEL_SELECTIONS = InputField(
         title="Channel Selection",
         description="The channels to affect in the latent correction",
         default="All Channels",
         input=Input.Direct,
     )
-    # expand_dynamic_range: bool = InputField(
-    #     title="Expand Dynamic Range",
-    #     description="If true, will expand the dynamic range of the latent channels to match the range of the VAE. Recommend FALSE when adjustment is not 0",
-    #     default=True,
-    #     input=Input.Direct,
-    # )
+    expand_dynamic_range: bool = InputField(
+        title="Expand Dynamic Range",
+        description="If true, will expand the dynamic range of the latent channels to match the range of the VAE. Recommend FALSE when adjustment is not 0",
+        default=False,
+        input=Input.Direct,
+    )
+    dynamic_range: float = InputField(
+        title="Dynamic Range",
+        description="The dynamic range of the latent channels to match the range of the VAE. Recommend FALSE when adjustment is not 0",
+        default=2,
+    )
 
     def invoke(self, context: InvocationContext) -> ModuleDataOutput:
 
@@ -887,11 +848,11 @@ class ColorGuidanceModuleInvocation(BaseInvocation):
             module="color_guidance",
             module_kwargs={
                 "sub_module": self.sub_module,
-                # "upper_bound": 4 + self.adjustment,
-                # "lower_bound": -4 + self.adjustment,
-                # "shift_strength": self.shift_strength,
+                "start_step": self.start_step,
+                "end_step": self.end_step,
                 "channels": channels,
-                # "expand_dynamic_range": self.expand_dynamic_range,
+                "expand_dynamic_range": self.expand_dynamic_range,
+                "dynamic_range": self.dynamic_range,
             },
         )
 
@@ -909,11 +870,11 @@ import time
 @module_noise_pred("skip_residual")
 def skip_residual(
     self: Modular_StableDiffusionGeneratorPipeline,
-    sample: torch.Tensor, #just to get the device
+    latents: torch.Tensor, #just to get the device
     t: torch.Tensor,
     module_kwargs: dict | None,
     **kwargs,
-) -> torch.Tensor:
+) -> tuple[torch.Tensor, torch.Tensor]:
     latents_input: dict = module_kwargs["latent_input"] #gets serialized into a dict instead of a LatentsField for some reason
     noise_input: dict = module_kwargs["noise_input"] #gets serialized into a dict instead of a LatentsField for some reason
     module_id = module_kwargs["module_id"]
@@ -922,10 +883,10 @@ def skip_residual(
     persistent_latent = self.check_persistent_data(module_id, "latent") #the latent from the original input on the module
     persistent_noise = self.check_persistent_data(module_id, "noise") #the noise from the original input on the module
     if persistent_latent is None: #load on first call
-        persistent_latent = self.context.services.latents.get(latents_input["latents_name"]).to(sample.device)
+        persistent_latent = self.context.services.latents.get(latents_input["latents_name"]).to(latents.device)
         self.set_persistent_data(module_id, "latent", persistent_latent)
     if persistent_noise is None: #load on first call
-        persistent_noise = self.context.services.latents.get(noise_input["latents_name"]).to(sample.device)
+        persistent_noise = self.context.services.latents.get(noise_input["latents_name"]).to(latents.device)
         self.set_persistent_data(module_id, "noise", persistent_noise)
     print(t)
     print(self.scheduler.config.num_train_timesteps)

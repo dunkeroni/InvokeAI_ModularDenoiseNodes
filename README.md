@@ -1,6 +1,14 @@
 Previously this repository was an implementation of DemoFusion for InvokeAI. It has now been generalized to allow more custom pipeline modifications.  
 DemoFusion paper: https://ruoyidu.github.io/demofusion/demofusion.html  
 
+## Code Refactor:
+There were some limitations to the way modules worked. Some structure changes to what happens when and which parameters are passed has improved that.  
+The new structure is as follows:  
+- Original Latents (NOT scaled model inputs), ControlNet DATA, T2I DATA are all passed down as inputs to the modules.  
+- Lowest level modules are responsible for resolving Latents->Scaled Latents as well as CNet/T2I->Residuals  
+- Modules return a Tuple of tensors: Noise_Prediction and Original_Latents are passed UP as return values to the calling module.  
+Modules have the opportunity to modify original latents (previous step result) before or after they are used for noise prediction. This is necessary for color correction and skip residual.  
+
 # Modular Denoise Latents
 The "Modular Denoise Latents" node has a "Custom Modules" input that accepts inputs from the modular nodes. These modules override the default behavior of the noise prediction in the diffusion pipeline.  
 All modules can be found by searching "modular" in the workflow interface.  

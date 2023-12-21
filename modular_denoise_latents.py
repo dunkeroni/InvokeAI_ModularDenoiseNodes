@@ -217,59 +217,6 @@ class Modular_StableDiffusionGeneratorPipeline(StableDiffusionGeneratorPipeline)
         super().__init__(*args, **kwargs)
 
 
-    #NEW function, called in step() to replace previous self.invokeai_diffuser.do_unet_step
-    def custom_substep(
-        self,
-        sample: torch.Tensor,
-        t: torch.Tensor,
-        conditioning_data,  # TODO: type
-        step_index: int,
-        total_step_count: int,
-        custom_module_data: ModuleData,
-        **kwargs,
-    ) -> torch.Tensor:
-        
-        # default to standard diffusion pipeline result
-        if custom_module_data is None:
-            down_block_additional_residuals = kwargs.pop("down_block_additional_residuals", None)
-            mid_block_additional_residual = kwargs.pop("mid_block_additional_residual", None)
-            down_intrablock_additional_residuals = kwargs.pop("down_intrablock_additional_residuals", None)
-
-            uc_noise_pred, c_noise_pred = self.invokeai_diffuser.do_unet_step(
-                sample=sample,
-                timestep=t,
-                step_index=step_index,
-                total_step_count=total_step_count,
-                conditioning_data=conditioning_data,
-                down_block_additional_residuals=down_block_additional_residuals,  # for ControlNet
-                mid_block_additional_residual=mid_block_additional_residual,  # for ControlNet
-                down_intrablock_additional_residuals=down_intrablock_additional_residuals,  # for T2I-Adapter
-            )
-
-            guidance_scale = conditioning_data.guidance_scale
-            if isinstance(guidance_scale, list):
-                guidance_scale = guidance_scale[step_index]
-
-            return self.invokeai_diffuser._combine(
-                uc_noise_pred,
-                c_noise_pred,
-                guidance_scale,
-            )
-
-        # invoke custom module
-        module_func: Callable = get_noise_prediction_module(custom_module_data.module)
-
-        return module_func(
-            self=self,
-            sample=sample,
-            t=t,
-            conditioning_data=conditioning_data,
-            step_index=step_index,
-            total_step_count=total_step_count,
-            module_kwargs=custom_module_data.module_kwargs,
-            **kwargs, #controlnet and t2i_adapter in kwargs, resolved later if updated
-            ) # recursive case
-
     def check_persistent_data(self, id: str, key: str):
         """Check if persistent data entry exists for the given id and key. Create None entry if not."""
         if id not in self.persistent_data:
@@ -279,12 +226,14 @@ class Modular_StableDiffusionGeneratorPipeline(StableDiffusionGeneratorPipeline)
             return None
         return self.persistent_data[id][key]
     
+
     def set_persistent_data(self, id: str, key: str, value: Any):
         """Set persistent data entry for the given id and key."""
         if id not in self.persistent_data:
             self.persistent_data[id] = {}
         self.persistent_data[id][key] = value
     
+
     def get_t2i_intrablock(self, t2i_adapter_data: list[T2IAdapterData], step_index, total_step_count):
         # Broken out of main step() function for easier calling later
         down_intrablock_additional_residuals = None
@@ -341,7 +290,7 @@ class Modular_StableDiffusionGeneratorPipeline(StableDiffusionGeneratorPipeline)
         #     i.e. before or after passing it to InvokeAIDiffuserComponent
         latent_model_input = self.scheduler.scale_model_input(latents, timestep)
 
-        # handle IP-Adapter
+        # handle IP-Adapter OUTSIDE of custom modules
         if self.use_ip_adapter and ip_adapter_data is not None:  # somewhat redundant but logic is clearer
             for i, single_ip_adapter_data in enumerate(ip_adapter_data):
                 first_adapter_step = math.floor(single_ip_adapter_data.begin_step_percent * total_step_count)
@@ -358,47 +307,34 @@ class Modular_StableDiffusionGeneratorPipeline(StableDiffusionGeneratorPipeline)
                     # Otherwise, set the IP-Adapter's scale to 0, so it has no effect.
                     ip_adapter_unet_patcher.set_scale(i, 0.0)
 
-        # Handle ControlNet(s) and T2I-Adapter(s)
-        down_block_additional_residuals = None
-        mid_block_additional_residual = None
-        down_intrablock_additional_residuals = None
-        # if control_data is not None and t2i_adapter_data is not None:
-        # TODO(ryand): This is a limitation of the UNet2DConditionModel API, not a fundamental incompatibility
-        # between ControlNets and T2I-Adapters. We will try to fix this upstream in diffusers.
-        #    raise Exception("ControlNet(s) and T2I-Adapter(s) cannot be used simultaneously (yet).")
-        # elif control_data is not None:
-        if control_data is not None:
-            down_block_additional_residuals, mid_block_additional_residual = self.invokeai_diffuser.do_controlnet_step(
-                control_data=control_data,
-                sample=latent_model_input,
-                timestep=timestep,
-                step_index=step_index,
-                total_step_count=total_step_count,
-                conditioning_data=conditioning_data,
-            )
-        # elif t2i_adapter_data is not None:
-        down_intrablock_additional_residuals = self.get_t2i_intrablock(t2i_adapter_data, step_index, total_step_count)
 
+        custom_module_data: ModuleData = self.custom_module_data
+        # default to standard diffusion pipeline result
+        if custom_module_data is None:
+            module_func: Callable = get_noise_prediction_module("standard_unet_step_module")
+            module_kwargs = {}
+        else:
+            # invoke custom module
+            module_func: Callable = get_noise_prediction_module(custom_module_data.module)
+            module_kwargs = custom_module_data.module_kwargs
         ################################ CUSTOM SUBSTEP  ################################
-        noise_pred = self.custom_substep(
+        noise_pred, original_latents = module_func(
+            self=self,
+            latents = latents,
             sample=latent_model_input,
             t=t,  # TODO: debug how handled batched and non batched timesteps
             step_index=step_index,
             total_step_count=total_step_count,
             conditioning_data=conditioning_data,
-            custom_module_data=self.custom_module_data,
-            # extra:
-            down_block_additional_residuals=down_block_additional_residuals,  # for ControlNet
-            mid_block_additional_residual=mid_block_additional_residual,  # for ControlNet
-            down_intrablock_additional_residuals=down_intrablock_additional_residuals,  # for T2I-Adapter
+            module_kwargs = module_kwargs,
             control_data=control_data, # passed down for tiling nodes to recalculate control blocks
             t2i_adapter_data=t2i_adapter_data, # passed down for tiling nodes to recalculate t2i blocks
-
         )
         ################################################################################
 
         # compute the previous noisy sample x_t -> x_t-1
-        step_output = self.scheduler.step(noise_pred, timestep, latents, **conditioning_data.scheduler_args)
+        # here latents is substituted for the returned original_latents because the custom modules may have changed them
+        step_output = self.scheduler.step(noise_pred, timestep, original_latents, **conditioning_data.scheduler_args)
 
         # TODO: issue to diffusers?
         # undo internal counter increment done by scheduler.step, so timestep can be resolved as before call
