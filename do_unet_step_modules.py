@@ -895,13 +895,10 @@ def skip_residual(
     if persistent_noise is None: #load on first call
         persistent_noise = self.context.services.latents.get(noise_input["latents_name"]).to(latents.device)
         self.set_persistent_data(module_id, "noise", persistent_noise)
-    print(t)
-    print(self.scheduler.config.num_train_timesteps)
-    print(((t) / self.scheduler.config.num_train_timesteps).item())
+
     noised_latents = torch.lerp(persistent_latent, persistent_noise, ((t) / self.scheduler.config.num_train_timesteps).item())
-    #wait 200ms
-    time.sleep(0.2)
-    return noised_latents - persistent_latent
+
+    return torch.zeros_like(noised_latents), noised_latents
 
 @invocation("skip_residual_module",
     title="Skip Residual Module",
