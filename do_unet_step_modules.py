@@ -702,9 +702,9 @@ def soft_clamp_tensor(input_tensor: torch.Tensor, threshold=0.9, boundary=4, cha
     return input_tensor
 
 # Center tensor (balance colors)
-def center_tensor(input_tensor, channel_shift=1, full_shift=1, channels=[0, 1, 2, 3]):
+def center_tensor(input_tensor, channel_shift=1, full_shift=1, channels=[0, 1, 2, 3], target = 0):
     for channel in channels:
-        input_tensor[0, channel] -= input_tensor[0, channel].mean() * channel_shift
+        input_tensor[0, channel] -= (input_tensor[0, channel].mean() - target) * channel_shift
     return input_tensor# - input_tensor.mean() * full_shift
 
 # Maximize/normalize tensor
@@ -740,6 +740,7 @@ def color_guidance(
     dynamic_range = module_kwargs["dynamic_range"]
     start_step = module_kwargs["start_step"]
     end_step = module_kwargs["end_step"]
+    target_mean = module_kwargs["target_mean"]
     channels = module_kwargs["channels"]
     # expand_dynamic_range: bool = module_kwargs["expand_dynamic_range"]
     timestep: float = t.item()
@@ -759,8 +760,8 @@ def color_guidance(
     # if timestep > 950:
     #     threshold = max(noise_pred.max(), abs(noise_pred.min())) * 0.998
     #     noise_pred = soft_clamp_tensor(noise_pred, threshold*0.998, threshold,channels=channels)
-    if timestep >= start_step and (timestep <= end_step or end_step == -1):
-        latents = center_tensor(latents, 0.6, 1.0, channels=channels)
+    if step_index >= start_step and (step_index <= end_step or end_step == -1):
+        latents = center_tensor(latents, 0.6, 1.0, channels=channels, target=target_mean)
         if expand_dynamic_range:
             latents = maximize_tensor(latents, boundary=dynamic_range, channels=channels)
     
@@ -826,6 +827,11 @@ class ColorGuidanceModuleInvocation(BaseInvocation):
         default="All Channels",
         input=Input.Direct,
     )
+    target_mean: float = InputField(
+        title="Target Mean",
+        description="The target mean to use for the latent correction",
+        default=0,
+    )
     expand_dynamic_range: bool = InputField(
         title="Expand Dynamic Range",
         description="If true, will expand the dynamic range of the latent channels to match the range of the VAE. Recommend FALSE when adjustment is not 0",
@@ -850,6 +856,7 @@ class ColorGuidanceModuleInvocation(BaseInvocation):
                 "sub_module": self.sub_module,
                 "start_step": self.start_step,
                 "end_step": self.end_step,
+                "target_mean": self.target_mean,
                 "channels": channels,
                 "expand_dynamic_range": self.expand_dynamic_range,
                 "dynamic_range": self.dynamic_range,
