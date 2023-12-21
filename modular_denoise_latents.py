@@ -312,11 +312,13 @@ class Modular_StableDiffusionGeneratorPipeline(StableDiffusionGeneratorPipeline)
         # default to standard diffusion pipeline result
         if custom_module_data is None:
             module_func: Callable = get_noise_prediction_module("standard_unet_step_module")
+            module_kwargs = {}
         else:
             # invoke custom module
             module_func: Callable = get_noise_prediction_module(custom_module_data.module)
+            module_kwargs = custom_module_data.module_kwargs
         ################################ CUSTOM SUBSTEP  ################################
-        step_output = module_func(
+        noise_pred, original_latents = module_func(
             self=self,
             latents = latents,
             sample=latent_model_input,
@@ -324,22 +326,21 @@ class Modular_StableDiffusionGeneratorPipeline(StableDiffusionGeneratorPipeline)
             step_index=step_index,
             total_step_count=total_step_count,
             conditioning_data=conditioning_data,
-            module_kwargs = custom_module_data.module_kwargs,
+            module_kwargs = module_kwargs,
             control_data=control_data, # passed down for tiling nodes to recalculate control blocks
             t2i_adapter_data=t2i_adapter_data, # passed down for tiling nodes to recalculate t2i blocks
         )
         ################################################################################
 
-        #increment step since we deferred it in the modules
-        # if self.scheduler.order == 2:
-        #     self.scheduler._index_counter[t[0].item()] += 1
-        self.scheduler._step_index += 1
+        # compute the previous noisy sample x_t -> x_t-1
+        # here latents is substituted for the returned original_latents because the custom modules may have changed them
+        step_output = self.scheduler.step(noise_pred, timestep, original_latents, **conditioning_data.scheduler_args)
 
         # TODO: issue to diffusers?
         # undo internal counter increment done by scheduler.step, so timestep can be resolved as before call
         # this needed to be able call scheduler.add_noise with current timestep
-        # if self.scheduler.order == 2:
-        #     self.scheduler._index_counter[timestep.item()] -= 1
+        if self.scheduler.order == 2:
+            self.scheduler._index_counter[timestep.item()] -= 1
 
         # TODO: this additional_guidance extension point feels redundant with InvokeAIDiffusionComponent.
         #    But the way things are now, scheduler runs _after_ that, so there was
