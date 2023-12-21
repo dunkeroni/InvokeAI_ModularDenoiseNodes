@@ -6,6 +6,8 @@ from invokeai.backend.stable_diffusion.diffusers_pipeline import ControlNetData,
 from invokeai.app.invocations.primitives import LatentsField
 import torch
 from typing import Literal, Optional, Callable, List
+import random
+import torch.nn.functional as F
 
 from invokeai.app.invocations.baseinvocation import (
     BaseInvocation,
@@ -113,8 +115,6 @@ class StandardStepModuleInvocation(BaseInvocation):
 # MultiDiffusion Sampling
 # From: https://multidiffusion.github.io/
 ####################################################################################################
-import random
-import torch.nn.functional as F
 def get_views(height, width, window_size=128, stride=64, random_jitter=False):
     # Here, we define the mappings F_i (see Eq. 7 in the MultiDiffusion paper https://arxiv.org/abs/2302.08113)
     # if panorama's height/width < window_size, num_blocks of height/width should return 1
@@ -705,12 +705,12 @@ def soft_clamp_tensor(input_tensor: torch.Tensor, threshold=0.9, boundary=4, cha
 def center_tensor(input_tensor, channel_shift=1, full_shift=1, channels=[0, 1, 2, 3]):
     for channel in channels:
         input_tensor[0, channel] -= input_tensor[0, channel].mean() * channel_shift
-    return input_tensor - input_tensor.mean() * full_shift
+    return input_tensor# - input_tensor.mean() * full_shift
 
 # Maximize/normalize tensor
-def maximize_tensor(input_tensor, boundary=8, channels=[0, 1, 2]):
+def maximize_tensor(input_tensor, boundary=4, channels=[0, 1, 2]):
     for channel in channels:
-        input_tensor[0, channel] *= boundary / input_tensor[0, channel].max()
+        input_tensor[0, channel] *= (boundary/2) / input_tensor[0, channel].max()
         #min_val = input_tensor[0, channel].min()
         #max_val = input_tensor[0, channel].max()
 
@@ -729,24 +729,20 @@ def maximize_tensor(input_tensor, boundary=8, channels=[0, 1, 2]):
 @module_noise_pred("color_guidance")
 def color_guidance(
     self: Modular_StableDiffusionGeneratorPipeline,
+    latents: torch.Tensor,
+    step_index: int,
     t: torch.Tensor,
     module_kwargs: dict | None,
     **kwargs,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     sub_module, sub_module_kwargs = resolve_module(module_kwargs["sub_module"])
-    # upper_bound: float = module_kwargs["upper_bound"]
-    # lower_bound: float = module_kwargs["lower_bound"]
-    # shift_strength: float = module_kwargs["shift_strength"]
+    expand_dynamic_range = module_kwargs["expand_dynamic_range"]
+    dynamic_range = module_kwargs["dynamic_range"]
+    start_step = module_kwargs["start_step"]
+    end_step = module_kwargs["end_step"]
     channels = module_kwargs["channels"]
     # expand_dynamic_range: bool = module_kwargs["expand_dynamic_range"]
     timestep: float = t.item()
-
-    noise_pred, original_latents = sub_module(
-        self=self,
-        t=t,
-        module_kwargs=sub_module_kwargs,
-        **kwargs,
-    )
 
     # center = upper_bound * 0.5 + lower_bound * 0.5
     # print(f"Color Guidance: timestep={timestep}, center={center}, channels={channels}, lower_bound={lower_bound}, upper_bound={upper_bound}")
@@ -763,11 +759,20 @@ def color_guidance(
     # if timestep > 950:
     #     threshold = max(noise_pred.max(), abs(noise_pred.min())) * 0.998
     #     noise_pred = soft_clamp_tensor(noise_pred, threshold*0.998, threshold,channels=channels)
-    if timestep > 700:
-        noise_pred = center_tensor(noise_pred, 0.8, 0.8, channels=channels)
-    if timestep > 1 and timestep < 100:
-        noise_pred = center_tensor(noise_pred, 0.6, 1.0, channels=channels)
-        # noise_pred = maximize_tensor(noise_pred, channels=channels)
+    if timestep >= start_step and (timestep <= end_step or end_step == -1):
+        latents = center_tensor(latents, 0.6, 1.0, channels=channels)
+        if expand_dynamic_range:
+            latents = maximize_tensor(latents, boundary=dynamic_range, channels=channels)
+    
+    noise_pred, original_latents = sub_module(
+        self=self,
+        latents=latents,
+        t=t,
+        step_index=step_index,
+        module_kwargs=sub_module_kwargs,
+        **kwargs,
+    )
+
     return noise_pred, original_latents
 
 CHANNEL_SELECTIONS = Literal[
@@ -775,7 +780,7 @@ CHANNEL_SELECTIONS = Literal[
     "Colors Only",
     "L0: Brightness",
     "L1: Red->Cyan",
-    "L2: Magenta->Green",
+    "L2: Lime->Purple",
     "L3: Structure",
 ]
 
@@ -803,28 +808,35 @@ class ColorGuidanceModuleInvocation(BaseInvocation):
         input=Input.Connection,
         ui_type=UIType.Any,
     )
-    # adjustment: float = InputField(
-    #     title="Adjustment",
-    #     description="0: Will correct colors to remain within VAE bounds. Othervalues will shift the mean of the latent. Recommended range: -0.2->0.2",
-    #     default=0,
-    # )
-    # shift_strength: float = InputField(
-    #     title="Shift Strength",
-    #     description="How much to shift the latent towards the new mean each step.",
-    #     default=0.5,
-    # )
+    start_step: int = InputField(
+        title="Start Step",
+        description="The step index at which to start applying color correction",
+        ge=0,
+        default=0,
+    )
+    end_step: int = InputField(
+        title="End Step",
+        description="The step index at which to stop applying color correction. -1 to never stop.",
+        ge=-1,
+        default=-1,
+    )
     channel_selection: CHANNEL_SELECTIONS = InputField(
         title="Channel Selection",
         description="The channels to affect in the latent correction",
         default="All Channels",
         input=Input.Direct,
     )
-    # expand_dynamic_range: bool = InputField(
-    #     title="Expand Dynamic Range",
-    #     description="If true, will expand the dynamic range of the latent channels to match the range of the VAE. Recommend FALSE when adjustment is not 0",
-    #     default=True,
-    #     input=Input.Direct,
-    # )
+    expand_dynamic_range: bool = InputField(
+        title="Expand Dynamic Range",
+        description="If true, will expand the dynamic range of the latent channels to match the range of the VAE. Recommend FALSE when adjustment is not 0",
+        default=False,
+        input=Input.Direct,
+    )
+    dynamic_range: float = InputField(
+        title="Dynamic Range",
+        description="The dynamic range of the latent channels to match the range of the VAE. Recommend FALSE when adjustment is not 0",
+        default=2,
+    )
 
     def invoke(self, context: InvocationContext) -> ModuleDataOutput:
 
@@ -836,11 +848,11 @@ class ColorGuidanceModuleInvocation(BaseInvocation):
             module="color_guidance",
             module_kwargs={
                 "sub_module": self.sub_module,
-                # "upper_bound": 4 + self.adjustment,
-                # "lower_bound": -4 + self.adjustment,
-                # "shift_strength": self.shift_strength,
+                "start_step": self.start_step,
+                "end_step": self.end_step,
                 "channels": channels,
-                # "expand_dynamic_range": self.expand_dynamic_range,
+                "expand_dynamic_range": self.expand_dynamic_range,
+                "dynamic_range": self.dynamic_range,
             },
         )
 
