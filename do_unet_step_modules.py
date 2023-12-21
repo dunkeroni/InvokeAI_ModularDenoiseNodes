@@ -702,7 +702,7 @@ def soft_clamp_tensor(input_tensor: torch.Tensor, threshold=0.9, boundary=4, cha
     return input_tensor
 
 # Center tensor (balance colors)
-def center_tensor(input_tensor, channel_shift=1, full_shift=1, channels=[0, 1, 2, 3], target = 0):
+def center_tensor(input_tensor, channel_shift=1, channels=[0, 1, 2, 3], target = 0):
     for channel in channels:
         input_tensor[0, channel] -= (input_tensor[0, channel].mean() - target) * channel_shift
     return input_tensor# - input_tensor.mean() * full_shift
@@ -761,7 +761,7 @@ def color_guidance(
     #     threshold = max(noise_pred.max(), abs(noise_pred.min())) * 0.998
     #     noise_pred = soft_clamp_tensor(noise_pred, threshold*0.998, threshold,channels=channels)
     if step_index >= start_step and (step_index <= end_step or end_step == -1):
-        latents = center_tensor(latents, 0.6, 1.0, channels=channels, target=target_mean)
+        latents = center_tensor(latents, 1, channels=channels, target=target_mean)
         if expand_dynamic_range:
             latents = maximize_tensor(latents, boundary=dynamic_range, channels=channels)
     
