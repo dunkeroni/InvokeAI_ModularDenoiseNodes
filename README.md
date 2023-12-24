@@ -63,7 +63,7 @@ Different decay values can impact when each stage takes over.
 These pipelines are not the same:  
 ![image](https://github.com/dunkeroni/InvokeAI_ModularDenoiseNodes/assets/3298737/3c2b1ef4-34bc-466e-b2c8-8af6dc35f019)  
 In the first pipeline, the Color Guidance node is a submodule of Tiled Denoise. As a result, color guidance will be applied to each tile individually. In the second pipeline, Tiled Denoise is a submodule of Color Guidance, so the color shift will affect the average for the entire image outside of the tiled denoise process.  
-Here you can see the effects of the two. In the end, the total average bightness is the same. However, the first pipeline (left) has distinct banding where the individual tiles were attempting to match a target average brightness instead of the full image brightness being adjusted.  
+Here you can see the effects of the two. In the end, the total average brightness is the same. However, the first pipeline (left) has distinct banding where the individual tiles were attempting to match a target average brightness instead of the full image brightness being adjusted.  
 ![image](https://github.com/dunkeroni/InvokeAI_ModularDenoiseNodes/assets/3298737/0d9bc95a-52bd-4ba6-9f27-284cf2887652)
 
 ## Developing New Modules
