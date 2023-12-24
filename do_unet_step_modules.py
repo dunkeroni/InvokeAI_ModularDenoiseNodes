@@ -736,8 +736,8 @@ def color_guidance(
     **kwargs,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     sub_module, sub_module_kwargs = resolve_module(module_kwargs["sub_module"])
-    expand_dynamic_range = module_kwargs["expand_dynamic_range"]
-    dynamic_range = module_kwargs["dynamic_range"]
+    expand_dynamic_range = False #module_kwargs["expand_dynamic_range"]
+    #dynamic_range = module_kwargs["dynamic_range"]
     start_step = module_kwargs["start_step"]
     end_step = module_kwargs["end_step"]
     target_mean = module_kwargs["target_mean"]
@@ -747,8 +747,8 @@ def color_guidance(
 
     if step_index >= start_step and (step_index <= end_step or end_step == -1):
         latents = shift_tensor(latents, 1, channels=channels, target=target_mean)
-        if expand_dynamic_range:
-            latents = expand_tensor(latents, boundary=dynamic_range, channels=channels)
+        # if expand_dynamic_range:
+        #     latents = expand_tensor(latents, boundary=dynamic_range, channels=channels)
     
     noise_pred, original_latents = sub_module(
         self=self,
@@ -817,17 +817,6 @@ class ColorGuidanceModuleInvocation(BaseInvocation):
         description="The target mean to use for the latent correction",
         default=0,
     )
-    expand_dynamic_range: bool = InputField(
-        title="Expand Dynamic Range",
-        description="If true, will expand the dynamic range of the latent channels to match the range of the VAE. Recommend FALSE when adjustment is not 0",
-        default=False,
-        input=Input.Direct,
-    )
-    dynamic_range: float = InputField(
-        title="Dynamic Range",
-        description="The dynamic range of the latent channels to match the range of the VAE. Recommend FALSE when adjustment is not 0",
-        default=2,
-    )
 
     def invoke(self, context: InvocationContext) -> ModuleDataOutput:
 
@@ -843,8 +832,6 @@ class ColorGuidanceModuleInvocation(BaseInvocation):
                 "end_step": self.end_step,
                 "target_mean": self.target_mean,
                 "channels": channels,
-                "expand_dynamic_range": self.expand_dynamic_range,
-                "dynamic_range": self.dynamic_range,
             },
         )
 
