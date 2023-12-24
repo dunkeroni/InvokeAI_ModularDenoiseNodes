@@ -26,6 +26,8 @@ To lock the colors into a more average distribution, we can use a Color Guidance
 The SDXL Color channels are L1 and L2. The brightness and contrast (L0, L3) are largely unchanged, but the coloration is more natural.  
 ![image](https://github.com/dunkeroni/InvokeAI_ModularDenoiseNodes/assets/3298737/d7d07ad6-ff97-4e8a-b7ca-a0f526ca2229)  
 
+Note: Color Guidance can be applied to SD1.5 models, but the individual latent channels are not as independently tied to colors as they are in SDXL. Some experimentation is required, and there may be a separate node for SD1.5 in the future if there turns out to be a controllable use case.  
+
 ### Example: Tiled Denoise Upscaling
 Tiled denoise becomes much more consistent when the tiles reconcile their difference between each step. This results in significantly less visible seams in the output. Splitting the denoise process into tiles decreases the VRAM usage for large upscales. In this setup, a 512x512 image is being scaled to 2048x2048 before being passed into a denoise latents node with a Tiled Denoise module.
 ![image](https://github.com/dunkeroni/InvokeAI_ModularDenoiseNodes/assets/3298737/f2f800bd-1d6f-491f-b2c6-736ca13a6369)  
