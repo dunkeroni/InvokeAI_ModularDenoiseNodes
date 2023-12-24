@@ -207,7 +207,7 @@ def multidiffusion_sampling(
     value_local = torch.zeros_like(latents_pad)
     count_local_latents = torch.zeros_like(latents_pad)
     value_local_latents = torch.zeros_like(latents_pad)
-    
+   
     for j, view in enumerate(views):
         h_start, h_end, w_start, w_end = view
         latents_for_view = latents_pad[:, :, h_start:h_end, w_start:w_end]
@@ -702,13 +702,13 @@ def soft_clamp_tensor(input_tensor: torch.Tensor, threshold=0.9, boundary=4, cha
     return input_tensor
 
 # Center tensor (balance colors)
-def center_tensor(input_tensor, channel_shift=1, channels=[0, 1, 2, 3], target = 0):
+def shift_tensor(input_tensor, channel_shift=1, channels=[0, 1, 2, 3], target = 0):
     for channel in channels:
         input_tensor[0, channel] -= (input_tensor[0, channel].mean() - target) * channel_shift
     return input_tensor# - input_tensor.mean() * full_shift
 
 # Maximize/normalize tensor
-def maximize_tensor(input_tensor, boundary=4, channels=[0, 1, 2]):
+def expand_tensor(input_tensor, boundary=4, channels=[0, 1, 2]):
     for channel in channels:
         input_tensor[0, channel] *= (boundary/2) / input_tensor[0, channel].max()
         #min_val = input_tensor[0, channel].min()
@@ -745,25 +745,10 @@ def color_guidance(
     # expand_dynamic_range: bool = module_kwargs["expand_dynamic_range"]
     timestep: float = t.item()
 
-    # center = upper_bound * 0.5 + lower_bound * 0.5
-    # print(f"Color Guidance: timestep={timestep}, center={center}, channels={channels}, lower_bound={lower_bound}, upper_bound={upper_bound}")
-    # if timestep > 950:
-    #     threshold = max(noise_pred.max(), abs(noise_pred.min())) * 0.998
-    #     noise_pred = soft_clamp_tensor(noise_pred, threshold*0.998, threshold)
-    # if timestep > 700:
-    #     noise_pred = center_tensor(noise_pred, 0.8, channels=channels, center=center)
-    # if timestep > 1: #do not shift again after the last step is completed
-    #     noise_pred = center_tensor(noise_pred, shift_strength, channels=channels, center=center)
-    #     noise_pred = normalize_tensor(noise_pred, lower_bound=lower_bound, upper_bound=upper_bound, channels=channels, expand_dynamic_range=expand_dynamic_range)
-    # return noise_pred
-
-    # if timestep > 950:
-    #     threshold = max(noise_pred.max(), abs(noise_pred.min())) * 0.998
-    #     noise_pred = soft_clamp_tensor(noise_pred, threshold*0.998, threshold,channels=channels)
     if step_index >= start_step and (step_index <= end_step or end_step == -1):
-        latents = center_tensor(latents, 1, channels=channels, target=target_mean)
+        latents = shift_tensor(latents, 1, channels=channels, target=target_mean)
         if expand_dynamic_range:
-            latents = maximize_tensor(latents, boundary=dynamic_range, channels=channels)
+            latents = expand_tensor(latents, boundary=dynamic_range, channels=channels)
     
     noise_pred, original_latents = sub_module(
         self=self,

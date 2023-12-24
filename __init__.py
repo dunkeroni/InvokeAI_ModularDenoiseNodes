@@ -4,6 +4,7 @@ from .do_unet_step_modules import (
     StandardStepModuleInvocation,
     multidiffusion_sampling,
     MultiDiffusionSamplingModuleInvocation,
+    TiledDenoiseLatentsModuleInvocation,
     dilated_sampling,
     DilatedSamplingModuleInvocation,
     cosine_decay_transfer,
@@ -12,4 +13,6 @@ from .do_unet_step_modules import (
     LinearTransferModuleInvocation,
     color_guidance,
     ColorGuidanceModuleInvocation,
-)
+    skip_residual,
+    SkipResidualModuleInvocation,
+) 
