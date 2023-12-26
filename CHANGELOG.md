@@ -1,4 +1,7 @@
-## Version 1.0.0 - First Release
+## Version 1.0.1 - 10/26/2023
+CFG Rescale Module added
+
+## Version 1.0.0 - 10/24/2023 - First Release 
 Modular Denoise Latents is now mostly stable, at least enough to say I won't totally break it every other day.  
 Further features and changes will be done in development branches, so main branch should remain usable.  
 

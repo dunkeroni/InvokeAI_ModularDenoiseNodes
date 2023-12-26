@@ -113,6 +113,7 @@ class StandardStepModuleInvocation(BaseInvocation):
 
 ####################################################################################################
 # CFG Rescale
+# From: https://arxiv.org/pdf/2305.08891.pdf
 ####################################################################################################
 """
 Rescale guidance to prevent overcooking
