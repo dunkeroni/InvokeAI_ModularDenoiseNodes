@@ -131,10 +131,6 @@ class AnalyzeLatentsInvocation(BaseInvocation):
 
 
 class ModuleData(BaseModel):
-    """
-    NOTE: Even though this data type is defined here, and there is a matching outputfield for it, they are only used for construction in the invocations.
-    Because of how the Custom Modules inputs work (Any type) they are recieved in the invocations as a dict. 
-    """
     name: str = Field(description="Name of the module")
     module_type: str = Field(description="Type of module. Not yet used, may be in future")
     module: str = Field(description="Name of the module function")
@@ -145,8 +141,7 @@ class ModuleData(BaseModel):
 class ModuleDataOutput(BaseInvocationOutput):
     module_data_output: ModuleData | None = OutputField(
         title="Module Data Output",
-        description="Information for calling the module in denoise latents step()",
-        ui_type=UIType.Any,
+        description="Information for calling the module in denoise latents step()"
     )
 
 
@@ -164,7 +159,6 @@ class Modular_DenoiseLatentsInvocation(DenoiseLatentsInvocation):
         description="Information to override the default unet_step functions",
         title="Custom Modules",
         input=Input.Connection,
-        ui_type=UIType.Any,
     )
 
     # OVERRIDE to use Modular_StableDiffusionGeneratorPipeline
