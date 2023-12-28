@@ -3,7 +3,9 @@ from .modular_denoise_latents import Modular_StableDiffusionGeneratorPipeline, M
 
 from invokeai.backend.stable_diffusion.diffusion.conditioning_data import ConditioningData
 from invokeai.backend.stable_diffusion.diffusers_pipeline import ControlNetData, T2IAdapterData
+from invokeai.backend.stable_diffusion.diffusion.shared_invokeai_diffusion import PostprocessingSettings
 from invokeai.app.invocations.primitives import LatentsField
+from invokeai.app.invocations.compel import ConditioningField
 import torch
 from typing import Literal, Optional, Callable, List
 import random
@@ -112,6 +114,142 @@ class StandardStepModuleInvocation(BaseInvocation):
         return ModuleDataOutput(
             module_data_output=module,
         )
+
+
+####################################################################################################
+# Perp Negative
+# From: https://perp-neg.github.io/
+####################################################################################################
+def get_perpendicular_component(x: torch.Tensor, y: torch.Tensor):
+    assert x.shape == y.shape
+    return x - ((torch.mul(x, y).sum())/(torch.norm(y)**2)) * y
+
+@module_noise_pred("perp_neg_unet_step")
+def perp_neg_do_unet_step(
+    self: Modular_StableDiffusionGeneratorPipeline,
+    latents: torch.Tensor, #result of previous step
+    t: torch.Tensor,
+    conditioning_data: ConditioningData,
+    step_index: int,
+    total_step_count: int,
+    module_kwargs: dict | None,
+    control_data: List[ControlNetData] = None,
+    t2i_adapter_data: list[T2IAdapterData] = None,
+    **kwargs,
+) -> tuple[torch.Tensor, torch.Tensor]:
+        timestep = t[0]
+        latent_model_input = self.scheduler.scale_model_input(latents, timestep)
+        module_id = module_kwargs["module_id"]
+
+        # check for saved unconditional
+        unconditional_conditioning_data = self.check_persistent_data(module_id, "unconditional_conditioning_data")
+        if unconditional_conditioning_data is None:
+            # format conditioning data
+            unconditional_name: ConditioningField = module_kwargs["unconditional_name"]
+            unconditional_data = self.context.services.latents.get(unconditional_name)
+            c = unconditional_data.conditionings[0].to(device=latents.device, dtype=latents.dtype)
+            extra_conditioning_info = c.extra_conditioning
+
+            unconditional_conditioning_data = ConditioningData(
+                unconditioned_embeddings=c,
+                text_embeddings=conditioning_data.text_embeddings,
+                guidance_scale=conditioning_data.guidance_scale,
+                guidance_rescale_multiplier=conditioning_data.guidance_rescale_multiplier,
+                extra=extra_conditioning_info,
+                postprocessing_settings=PostprocessingSettings(
+                    threshold=0.0,  # threshold,
+                    warmup=0.2,  # warmup,
+                    h_symmetry_time_pct=None,  # h_symmetry_time_pct,
+                    v_symmetry_time_pct=None,  # v_symmetry_time_pct,
+                ),
+            )
+            self.set_persistent_data(module_id, "unconditional_conditioning_data", unconditional_conditioning_data)
+
+        
+        # Handle ControlNet(s)
+        down_block_additional_residuals = None
+        mid_block_additional_residual = None
+        down_intrablock_additional_residuals = None
+        if control_data is not None:
+            down_block_additional_residuals, mid_block_additional_residual = self.invokeai_diffuser.do_controlnet_step(
+                control_data=control_data,
+                sample=latent_model_input,
+                timestep=timestep,
+                step_index=step_index,
+                total_step_count=total_step_count,
+                conditioning_data=conditioning_data,
+            )
+        
+        # and T2I-Adapter(s)
+        down_intrablock_additional_residuals = self.get_t2i_intrablock(t2i_adapter_data, step_index, total_step_count)
+
+        # result from calling object's default pipeline
+        # extra kwargs get dropped here, so pass whatever you like down the chain
+        negative_noise_pred, positive_noise_pred = self.invokeai_diffuser.do_unet_step(
+            sample=latent_model_input,
+            timestep=t,
+            conditioning_data=conditioning_data,
+            step_index=step_index,
+            total_step_count=total_step_count,
+            down_block_additional_residuals=down_block_additional_residuals,  # for ControlNet
+            mid_block_additional_residual=mid_block_additional_residual,  # for ControlNet
+            down_intrablock_additional_residuals=down_intrablock_additional_residuals,  # for T2I-Adapter
+        )
+
+        # result from calling object's default pipeline with module's unconditional conditioning
+        # NOTE: it is possible to get noise prediction from just the unconditional, and only take 50% longer instead of 100%
+        # BUT: that's burried a few layers deeper than I want to customize right now.
+        unconditional_noise_pred, _ = self.invokeai_diffuser.do_unet_step(
+            sample=latent_model_input,
+            timestep=t,
+            conditioning_data=unconditional_conditioning_data,
+            step_index=step_index,
+            total_step_count=total_step_count,
+            down_block_additional_residuals=down_block_additional_residuals,  # for ControlNet
+            mid_block_additional_residual=mid_block_additional_residual,  # for ControlNet
+            down_intrablock_additional_residuals=down_intrablock_additional_residuals,  # for T2I-Adapter
+        )
+
+        main = positive_noise_pred - unconditional_noise_pred
+        e_i = negative_noise_pred - unconditional_noise_pred
+        perp = -1 * get_perpendicular_component(e_i, main)
+
+        guidance_scale = conditioning_data.guidance_scale
+        if isinstance(guidance_scale, list):
+            guidance_scale = guidance_scale[step_index]
+
+        #noise_pred = self.invokeai_diffuser._combine(uc_noise_pred, perp_noise_pred, guidance_scale)
+        noise_pred = unconditional_noise_pred + guidance_scale * (main + perp)
+
+        return noise_pred, latents
+
+@invocation("perp_neg_unet_step_module",
+    title="Perp Negative",
+    tags=["module", "modular"],
+    category="modular",
+    version="1.0.0",
+)
+class PerpNegStepModuleInvocation(BaseInvocation):
+    """Module: Perp Negative noise prediction."""
+    unconditional: ConditioningField = InputField(
+        description="EMPTY CONDITIONING GOES HERE",
+        input=Input.Connection, 
+    )
+    def invoke(self, context: InvocationContext) -> ModuleDataOutput:
+        module = ModuleData(
+            name="Perp Negative",
+            module_type="do_unet_step",
+            module="perp_neg_unet_step",
+            module_kwargs={
+                "unconditional_name": self.unconditional.conditioning_name,
+                "module_id": self.id,
+            },
+        )
+
+        return ModuleDataOutput(
+            module_data_output=module,
+        )
+
 
 ####################################################################################################
 # MultiDiffusion Sampling

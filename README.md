@@ -13,6 +13,7 @@ Please Note: I am not the original designer for most of these noise prediction m
 | Tiled Denoise | Splits the denoise process into multiple overlapping tiles. Adds generation time but reduces VRAM usage. Tile positions are maintained with a static minimum overlap. | N/A |
 | Skip Residual | Instead of predicting noise, create a timestep% noised version of the input latent. | https://ruoyidu.github.io/demofusion/demofusion.html |
 | Analyze Latents | I originally put this in for debugging, but it's pretty helpful for tuning the color guidance module. | N/A |
+| Perp Negative | Under Construction: Only applies the parts of the negative prompt that do not conflict with the positive prompt. | https://perp-neg.github.io/ |
 
 ## Using modules
 The new Modular Denoise Latents node added by this pack includes an input for "Custom Modules". The node inherits from InvokeAI's built-in Denoise Latents Invocation, and if you do not connect any modules then it will function exactly the same as the default denoise node does. As a result, these module nodes should also be forward-compatible with almost any updates to InvokeAI. You can use the Modular Denoise Latents node anywhere that you would use the normal node in case you want to add modules in the future without having to remake the rest of the connections.  

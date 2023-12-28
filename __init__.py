@@ -15,4 +15,6 @@ from .do_unet_step_modules import (
     ColorGuidanceModuleInvocation,
     skip_residual,
     SkipResidualModuleInvocation,
+    perp_neg_do_unet_step,
+    PerpNegStepModuleInvocation,
 ) 
