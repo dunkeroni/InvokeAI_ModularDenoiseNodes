@@ -1,3 +1,7 @@
+## Version 1.0.2 - 10/27/2023
+Updated compatibility to Invoke 3.5.0
+Removed CFG Rescale Module since that is in the default denoise latents node now.
+
 ## Version 1.0.1 - 10/26/2023
 CFG Rescale Module added
 

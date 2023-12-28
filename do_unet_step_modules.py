@@ -82,11 +82,14 @@ def standard_do_unet_step(
         if isinstance(guidance_scale, list):
             guidance_scale = guidance_scale[step_index]
 
-        noise_pred = self.invokeai_diffuser._combine(
-            uc_noise_pred,
-            c_noise_pred,
-            guidance_scale,
-        )
+        noise_pred = self.invokeai_diffuser._combine(uc_noise_pred, c_noise_pred, guidance_scale)
+        guidance_rescale_multiplier = conditioning_data.guidance_rescale_multiplier
+        if guidance_rescale_multiplier > 0:
+            noise_pred = self._rescale_cfg(
+                noise_pred,
+                c_noise_pred,
+                guidance_rescale_multiplier,
+            )
 
         return noise_pred, latents
 
@@ -104,114 +107,6 @@ class StandardStepModuleInvocation(BaseInvocation):
             module_type="do_unet_step",
             module="standard_unet_step_module",
             module_kwargs={},
-        )
-
-        return ModuleDataOutput(
-            module_data_output=module,
-        )
-
-
-####################################################################################################
-# CFG Rescale
-# From: https://arxiv.org/pdf/2305.08891.pdf
-####################################################################################################
-"""
-Rescale guidance to prevent overcooking
-"""
-def apply_cfg(pos, neg, weight=7.5, rescale=0.7):
-    # Apply regular classifier-free guidance.
-    cfg = neg + weight * (pos - neg)
-    # Calculate standard deviations.
-    std_pos = pos.std([1,2,3], keepdim=True)
-    std_cfg = cfg.std([1,2,3], keepdim=True)
-    # Apply guidance rescale with fused operations.
-    factor = std_pos / std_cfg
-    factor = rescale * factor + (1 - rescale)
-    return cfg * factor
-
-
-@module_noise_pred("cfg_rescale")
-def cfg_rescale_noise_prediction(
-    self: Modular_StableDiffusionGeneratorPipeline,
-    latents: torch.Tensor, #result of previous step
-    module_kwargs: dict | None,
-    t: torch.Tensor,
-    conditioning_data: ConditioningData,
-    step_index: int,
-    total_step_count: int,
-    control_data: List[ControlNetData] = None,
-    t2i_adapter_data: list[T2IAdapterData] = None,
-    **kwargs,
-) -> tuple[torch.Tensor, torch.Tensor]:
-        rescale = module_kwargs["rescale"]
-        timestep = t[0]
-        latent_model_input = self.scheduler.scale_model_input(latents, timestep)
-        
-        # Handle ControlNet(s)
-        down_block_additional_residuals = None
-        mid_block_additional_residual = None
-        down_intrablock_additional_residuals = None
-        if control_data is not None:
-            down_block_additional_residuals, mid_block_additional_residual = self.invokeai_diffuser.do_controlnet_step(
-                control_data=control_data,
-                sample=latent_model_input,
-                timestep=timestep,
-                step_index=step_index,
-                total_step_count=total_step_count,
-                conditioning_data=conditioning_data,
-            )
-        
-        # and T2I-Adapter(s)
-        down_intrablock_additional_residuals = self.get_t2i_intrablock(t2i_adapter_data, step_index, total_step_count)
-
-        # result from calling object's default pipeline
-        # extra kwargs get dropped here, so pass whatever you like down the chain
-        uc_noise_pred, c_noise_pred = self.invokeai_diffuser.do_unet_step(
-            sample=latent_model_input,
-            timestep=t,
-            conditioning_data=conditioning_data,
-            step_index=step_index,
-            total_step_count=total_step_count,
-            down_block_additional_residuals=down_block_additional_residuals,  # for ControlNet
-            mid_block_additional_residual=mid_block_additional_residual,  # for ControlNet
-            down_intrablock_additional_residuals=down_intrablock_additional_residuals,  # for T2I-Adapter
-        )
-
-        guidance_scale = conditioning_data.guidance_scale
-        if isinstance(guidance_scale, list):
-            guidance_scale = guidance_scale[step_index]
-
-        # noise_pred = self.invokeai_diffuser._combine(
-        #     uc_noise_pred,
-        #     c_noise_pred,
-        #     guidance_scale,
-        # )
-        noise_pred = apply_cfg(c_noise_pred, uc_noise_pred, guidance_scale, rescale=rescale)
-
-        return noise_pred, latents
-
-@invocation("cfg_rescale_unet_step_module",
-    title="CFG Rescale Module",
-    tags=["module", "modular"],
-    category="modular",
-    version="1.0.0",
-)
-class CFGRescaleModuleInvocation(BaseInvocation):
-    """Module: CFG Rescale"""
-    rescale: float = InputField(
-        title="Rescale (phi)",
-        description="Rescale factor for guidance",
-        ge=0,
-        default=0.7,
-    )
-    def invoke(self, context: InvocationContext) -> ModuleDataOutput:
-        module = ModuleData(
-            name="CFG Rescale Module",
-            module_type="do_unet_step",
-            module="cfg_rescale",
-            module_kwargs={
-                "rescale": self.rescale,
-            },
         )
 
         return ModuleDataOutput(
