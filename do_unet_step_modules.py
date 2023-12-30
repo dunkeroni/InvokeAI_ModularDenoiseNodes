@@ -220,6 +220,13 @@ def perp_neg_do_unet_step(
 
         #noise_pred = self.invokeai_diffuser._combine(uc_noise_pred, perp_noise_pred, guidance_scale)
         noise_pred = unconditional_noise_pred + guidance_scale * (main + perp)
+        guidance_rescale_multiplier = conditioning_data.guidance_rescale_multiplier
+        if guidance_rescale_multiplier > 0:
+            noise_pred = self._rescale_cfg(
+                noise_pred,
+                positive_noise_pred,
+                guidance_rescale_multiplier,
+            )
 
         return noise_pred, latents
 
