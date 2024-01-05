@@ -991,7 +991,6 @@ class ColorGuidanceModuleInvocation(BaseInvocation):
 # Skip Residual 
 # From: https://ruoyidu.github.io/demofusion/demofusion.html
 ####################################################################################################
-import time
 """Instead of denoising, synthetically noise an input latent to the noise level of the current timestep."""
 @module_noise_pred("skip_residual")
 def skip_residual(
@@ -1047,6 +1046,117 @@ class SkipResidualModuleInvocation(BaseInvocation):
                 "latent_input": self.latent_input,
                 "noise_input": self.noise_input,
                 "module_id": self.id,
+            },
+        )
+
+        return ModuleDataOutput(
+            module_data_output=module,
+        )
+
+####################################################################################################
+# Sharpness
+# From: https://github.com/lllyasviel/Fooocus/blob/176faf6f347b90866afe676fc9fb2c2d74587d7b/modules/patch.py
+# GNU General Public License v3.0 https://github.com/lllyasviel/Fooocus/blob/176faf6f347b90866afe676fc9fb2c2d74587d7b/LICENSE
+####################################################################################################
+"""
+Increase the sharpness of the image by applying a filter to the noise prediction and compute guidance influenced by the result.
+"""
+from .anisotropic import adaptive_anisotropic_filter
+@module_noise_pred("fooocus_sharpness_module")
+def fooocus_sharpness_unet_step(
+    self: Modular_StableDiffusionGeneratorPipeline,
+    latents: torch.Tensor, #result of previous step
+    t: torch.Tensor,
+    conditioning_data: ConditioningData,
+    step_index: int,
+    total_step_count: int,
+    module_kwargs: dict | None,
+    control_data: List[ControlNetData] = None,
+    t2i_adapter_data: list[T2IAdapterData] = None,
+    **kwargs,
+) -> tuple[torch.Tensor, torch.Tensor]:
+        timestep = t[0]
+        latent_model_input = self.scheduler.scale_model_input(latents, timestep)
+        sharpness = module_kwargs["sharpness"]
+        
+        # Handle ControlNet(s)
+        down_block_additional_residuals = None
+        mid_block_additional_residual = None
+        down_intrablock_additional_residuals = None
+        if control_data is not None:
+            down_block_additional_residuals, mid_block_additional_residual = self.invokeai_diffuser.do_controlnet_step(
+                control_data=control_data,
+                sample=latent_model_input,
+                timestep=timestep,
+                step_index=step_index,
+                total_step_count=total_step_count,
+                conditioning_data=conditioning_data,
+            )
+        
+        # and T2I-Adapter(s)
+        down_intrablock_additional_residuals = self.get_t2i_intrablock(t2i_adapter_data, step_index, total_step_count)
+
+        # result from calling object's default pipeline
+        # extra kwargs get dropped here, so pass whatever you like down the chain
+        uc_noise_pred, c_noise_pred = self.invokeai_diffuser.do_unet_step(
+            sample=latent_model_input,
+            timestep=t,
+            conditioning_data=conditioning_data,
+            step_index=step_index,
+            total_step_count=total_step_count,
+            down_block_additional_residuals=down_block_additional_residuals,  # for ControlNet
+            mid_block_additional_residual=mid_block_additional_residual,  # for ControlNet
+            down_intrablock_additional_residuals=down_intrablock_additional_residuals,  # for T2I-Adapter
+        )
+
+        guidance_scale = conditioning_data.guidance_scale
+        if isinstance(guidance_scale, list):
+            guidance_scale = guidance_scale[step_index]
+
+        # The following code is adapted from lllyasveil's Fooocus project, linked above
+        # It has been modified by @dunkeroni to work with the invokeai_diffuser pipeline components
+        positive_eps = latent_model_input - c_noise_pred
+        negative_eps = latent_model_input - uc_noise_pred
+
+        alpha = 0.001 * sharpness * (1 - timestep.item()/999.0)
+        positive_eps_degraded = adaptive_anisotropic_filter(x=positive_eps, g=c_noise_pred)
+        positive_eps_degraded_weighted = torch.lerp(positive_eps, positive_eps_degraded, alpha)
+
+        noise_pred = latent_model_input - self.invokeai_diffuser._combine(negative_eps, positive_eps_degraded_weighted, guidance_scale)
+        # End of adapted code
+
+        guidance_rescale_multiplier = conditioning_data.guidance_rescale_multiplier
+        if guidance_rescale_multiplier > 0:
+            noise_pred = self._rescale_cfg(
+                noise_pred,
+                c_noise_pred,
+                guidance_rescale_multiplier,
+            )
+
+        return noise_pred, latents
+
+@invocation("fooocus_sharpness_module",
+    title="Sharpness Module",
+    tags=["module", "modular"],
+    category="modular",
+    version="1.0.0",
+)
+class FooocusSharpnessModuleInvocation(BaseInvocation):
+    """Module: Sharpness"""
+    sharpness: float = InputField(
+        title="Sharpness",
+        description="The sharpness to apply to the noise prediction. Recommended Range: 2~30",
+        gt=0,
+        default=2,
+    )
+
+    def invoke(self, context: InvocationContext) -> ModuleDataOutput:
+        module = ModuleData(
+            name="Sharpness module",
+            module_type="do_unet_step",
+            module="fooocus_sharpness_module",
+            module_kwargs={
+                "sharpness": self.sharpness,
             },
         )
 

@@ -17,4 +17,6 @@ from .do_unet_step_modules import (
     SkipResidualModuleInvocation,
     perp_neg_do_unet_step,
     PerpNegStepModuleInvocation,
+    fooocus_sharpness_unet_step,
+    FooocusSharpnessModuleInvocation,
 ) 
