@@ -926,11 +926,11 @@ CHANNEL_VALUES = {
     "L3: Structure": [3],
 }
 
-@invocation("color_guidance_module",
-    title="Color Guidance Module",
-    tags=["module", "modular"],
+@invocation("color_guidance_module_SDXL",
+    title="MOD: Color Guidance SDXL",
+    tags=["modifier", "module", "modular"],
     category="modular",
-    version="1.0.1",
+    version="1.0.2",
 )
 class ColorGuidanceModuleInvocation(BaseInvocation):
     """Module: Color Guidance (fix SDXL yellow bias)"""
@@ -979,6 +979,152 @@ class ColorGuidanceModuleInvocation(BaseInvocation):
                 "end_step": self.end_step,
                 "target_mean": self.target_mean,
                 "channels": channels,
+            },
+        )
+
+        return ModuleDataOutput(
+            module_data_output=module,
+        )
+
+####################################################################################################
+# SD1 Color Guidance
+# From: https://github.com/Haoming02/sd-webui-vectorscope-cc
+####################################################################################################
+@module_noise_pred("color_offset")
+def color_offset(
+    self: Modular_StableDiffusionGeneratorPipeline,
+    latents: torch.Tensor,
+    step_index: int,
+    total_step_count: int,
+    t: torch.Tensor,
+    module_kwargs: dict | None,
+    **kwargs,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    sub_module, sub_module_kwargs = resolve_module(module_kwargs["sub_module"])
+    red = module_kwargs["red"]
+    green = module_kwargs["green"]
+    blue = module_kwargs["blue"]
+    brightness = module_kwargs["brightness"]
+    contrast = module_kwargs["contrast"]
+    saturation = module_kwargs["saturation"]
+    scaling = module_kwargs["scaling"]
+
+    if scaling == "Linear":
+        scale = 1 - (step_index / total_step_count)
+    elif scaling == "Denoise":
+        scale = (t / self.scheduler.config.num_train_timesteps)
+    elif scaling == "None":
+        scale = 1
+    
+    #This could be generated with other methods (randn, etc.), but there doesn't seem to be value in providing those to users
+    adjuster = torch.ones_like(latents[:, 0]) * scale
+    scaled_saturation = (saturation - 1) * scale + 1
+
+    L = latents[:, 0]
+    R = latents[:, 2]
+    G = latents[:, 1]
+    B = latents[:, 3]
+
+    L += brightness * adjuster
+    L += torch.sub(L, torch.mean(L)) * contrast * scale
+    R -= red * adjuster
+    G += green * adjuster
+    B -= blue * adjuster
+
+    R *= scaled_saturation
+    G *= scaled_saturation
+    B *= scaled_saturation
+
+    noise_pred, original_latents = sub_module(
+        self=self,
+        latents=latents,
+        t=t,
+        step_index=step_index,
+        total_step_count=total_step_count,
+        module_kwargs=sub_module_kwargs,
+        **kwargs,
+    )
+
+    return noise_pred, original_latents
+
+@invocation("color_offset_module_SD1",
+    title="MOD: Color Offset SD1",
+    tags=["modifier", "module", "modular"],
+    category="modular",
+    version="1.0.0",
+)
+class ColorOffsetModuleInvocation(BaseInvocation):
+    """Module: SD1 Color Offset"""
+    sub_module: Optional[ModuleData] = InputField(
+        default=None,
+        description="The custom module to use for each noise prediction tile. No connection will use the default pipeline.",
+        title="SubModules",
+        input=Input.Connection,
+        ui_type=UIType.Any,
+    )
+    red: float = InputField(
+        title="Red Offset",
+        description="[-4 - 4] The amount to shift the red channel",
+        ge=-4,
+        le=4,
+        default=0,
+    )
+    green: float = InputField(
+        title="Green Offset",
+        description="[-4 - 4] The amount to shift the green channel",
+        ge=-4,
+        le=4,
+        default=0,
+    )
+    blue: float = InputField(
+        title="Blue Offset",
+        description="[-4 - 4] The amount to shift the blue channel",
+        ge=-4,
+        le=4,
+        default=0,
+    )
+    brightness: float = InputField(
+        title="Brightness Offset",
+        description="[-6 - 6] The amount to shift the brightness",
+        ge=-6,
+        le=6,
+        default=0,
+    )
+    contrast: float = InputField(
+        title="Contrast Offset",
+        description="[-5 - 5] The amount to shift the contrast",
+        ge=-5,
+        le=5,
+        default=0,
+    )
+    saturation: float = InputField(
+        title="Saturation Target",
+        description="[-0.2 - 1.8] The target for the saturation",
+        ge=0.2,
+        le=1.8,
+        default=1,
+    )
+    scaling: Literal["Linear", "Denoise", "None"] = InputField(
+        title="Scaling",
+        description="The scaling method to use",
+        default="Linear",
+        input=Input.Direct,
+    )
+
+    def invoke(self, context: InvocationContext) -> ModuleDataOutput:
+        module = ModuleData(
+            name="Color Offset module",
+            module_type="do_unet_step",
+            module="color_offset",
+            module_kwargs={
+                "sub_module": self.sub_module,
+                "red": self.red,
+                "green": self.green,
+                "blue": self.blue,
+                "brightness": self.brightness,
+                "contrast": self.contrast,
+                "saturation": self.saturation,
+                "scaling": self.scaling,
             },
         )
 
