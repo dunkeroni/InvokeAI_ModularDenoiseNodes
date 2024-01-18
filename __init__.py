@@ -1,4 +1,4 @@
-from .modular_denoise_latents import Modular_DenoiseLatentsInvocation, AnalyzeLatentsInvocation
+from .modular_denoise_latents import Modular_DenoiseLatentsInvocation
 from .do_unet_step_modules import (
     standard_do_unet_step,
     StandardStepModuleInvocation,
@@ -20,3 +20,4 @@ from .do_unet_step_modules import (
     fooocus_sharpness_unet_step,
     FooocusSharpnessModuleInvocation,
 ) 
+from .analyse_latents import AnalyzeLatentsInvocation
