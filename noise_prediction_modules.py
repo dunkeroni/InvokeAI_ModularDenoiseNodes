@@ -1,5 +1,5 @@
 from .modular_decorators import module_noise_pred, get_noise_prediction_module
-from .modular_denoise_latents import Modular_StableDiffusionGeneratorPipeline, ModuleData, ModuleDataOutput
+from .modular_denoise_latents import Modular_StableDiffusionGeneratorPipeline, ModuleData, NP_ModuleDataOutput, NP_ModuleData
 
 from invokeai.backend.stable_diffusion.diffusion.conditioning_data import ConditioningData
 from invokeai.backend.stable_diffusion.diffusers_pipeline import ControlNetData, T2IAdapterData
@@ -102,16 +102,15 @@ def standard_do_unet_step(
     version="1.0.0",
 )
 class StandardStepModuleInvocation(BaseInvocation):
-    """Module: InvokeAI standard noise prediction."""
-    def invoke(self, context: InvocationContext) -> ModuleDataOutput:
-        module = ModuleData(
+    """NP_MOD: InvokeAI standard noise prediction."""
+    def invoke(self, context: InvocationContext) -> NP_ModuleDataOutput:
+        module = NP_ModuleData(
             name="Standard UNet Step Module",
-            module_type="do_unet_step",
             module="standard_unet_step_module",
             module_kwargs={},
         )
 
-        return ModuleDataOutput(
+        return NP_ModuleDataOutput(
             module_data_output=module,
         )
 
@@ -237,15 +236,14 @@ def perp_neg_do_unet_step(
     version="1.0.0",
 )
 class PerpNegStepModuleInvocation(BaseInvocation):
-    """Module: Perp Negative noise prediction."""
+    """NP_MOD: Perp Negative noise prediction."""
     unconditional: ConditioningField = InputField(
         description="EMPTY CONDITIONING GOES HERE",
         input=Input.Connection, 
     )
-    def invoke(self, context: InvocationContext) -> ModuleDataOutput:
-        module = ModuleData(
+    def invoke(self, context: InvocationContext) -> NP_ModuleDataOutput:
+        module = NP_ModuleData(
             name="Perp Negative",
-            module_type="do_unet_step",
             module="perp_neg_unet_step",
             module_kwargs={
                 "unconditional_name": self.unconditional.conditioning_name,
@@ -253,7 +251,7 @@ class PerpNegStepModuleInvocation(BaseInvocation):
             },
         )
 
-        return ModuleDataOutput(
+        return NP_ModuleDataOutput(
             module_data_output=module,
         )
 
@@ -439,11 +437,11 @@ MD_PAD_MODES = Literal[
     version="1.0.0",
 )
 class MultiDiffusionSamplingModuleInvocation(BaseInvocation):
-    """Module: MultiDiffusion tiled sampling. NOT compatible with t2i adapters."""
+    """NP_MOD: MultiDiffusion tiled sampling. NOT compatible with t2i adapters."""
     sub_module: Optional[ModuleData] = InputField(
         default=None,
         description="The custom module to use for each noise prediction tile. No connection will use the default pipeline.",
-        title="SubModules",
+        title="[NP] SubModules",
         input=Input.Connection,
         ui_type=UIType.Any,
     )
@@ -468,10 +466,9 @@ class MultiDiffusionSamplingModuleInvocation(BaseInvocation):
         input=Input.Direct,
     )
 
-    def invoke(self, context: InvocationContext) -> ModuleDataOutput:
-        module = ModuleData(
+    def invoke(self, context: InvocationContext) -> NP_ModuleDataOutput:
+        module = NP_ModuleData(
             name="MultiDiffusion Sampling Step module",
-            module_type="do_unet_step",
             module="multidiffusion_sampling",
             module_kwargs={
                 "sub_module": self.sub_module,
@@ -482,7 +479,7 @@ class MultiDiffusionSamplingModuleInvocation(BaseInvocation):
             },
         )
 
-        return ModuleDataOutput(
+        return NP_ModuleDataOutput(
             module_data_output=module,
         )
 
@@ -554,11 +551,11 @@ def dilated_sampling(
     version="1.0.0",
 )
 class DilatedSamplingModuleInvocation(BaseInvocation):
-    """Module: Dilated Sampling"""
+    """NP_MOD: Dilated Sampling"""
     sub_module: Optional[ModuleData] = InputField(
         default=None,
         description="The custom module to use for each interlaced noise prediction. No connection will use the default pipeline.",
-        title="SubModules",
+        title="[NP] SubModules",
         input=Input.Connection,
         ui_type=UIType.Any,
     )
@@ -575,10 +572,9 @@ class DilatedSamplingModuleInvocation(BaseInvocation):
         default=1,
     )
 
-    def invoke(self, context: InvocationContext) -> ModuleDataOutput:
-        module = ModuleData(
+    def invoke(self, context: InvocationContext) -> NP_ModuleDataOutput:
+        module = NP_ModuleData(
             name="Dilated Sampling Step module",
-            module_type="do_unet_step",
             module="dilated_sampling",
             module_kwargs={
                 "sub_module": self.sub_module,
@@ -587,7 +583,7 @@ class DilatedSamplingModuleInvocation(BaseInvocation):
             },
         )
 
-        return ModuleDataOutput(
+        return NP_ModuleDataOutput(
             module_data_output=module,
         )
 
@@ -634,18 +630,18 @@ def cosine_decay_transfer(
     version="1.0.0",
 )
 class CosineDecayTransferModuleInvocation(BaseInvocation):
-    """Module: Smoothly changed modules based on remaining denoise"""
+    """NP_MOD: Smoothly changed modules based on remaining denoise"""
     sub_module_1: Optional[ModuleData] = InputField(
         default=None,
         description="The custom module to use for the first noise prediction. No connection will use the default pipeline.",
-        title="SubModule 1",
+        title="[NP] SubModule 1",
         input=Input.Connection,
         ui_type=UIType.Any,
     )
     sub_module_2: Optional[ModuleData] = InputField(
         default=None,
         description="The custom module to use for the second noise prediction. No connection will use the default pipeline.",
-        title="SubModule 2",
+        title="[NP] SubModule 2",
         input=Input.Connection,
         ui_type=UIType.Any,
     )
@@ -656,10 +652,9 @@ class CosineDecayTransferModuleInvocation(BaseInvocation):
         default=1,
     )
 
-    def invoke(self, context: InvocationContext) -> ModuleDataOutput:
-        module = ModuleData(
+    def invoke(self, context: InvocationContext) -> NP_ModuleDataOutput:
+        module = NP_ModuleData(
             name="Cosine Decay Transfer module",
-            module_type="do_unet_step",
             module="cosine_decay_transfer",
             module_kwargs={
                 "sub_module_1": self.sub_module_1,
@@ -668,7 +663,7 @@ class CosineDecayTransferModuleInvocation(BaseInvocation):
             },
         )
 
-        return ModuleDataOutput(
+        return NP_ModuleDataOutput(
             module_data_output=module,
         )
 
@@ -728,18 +723,18 @@ def linear_transfer(
     version="1.0.0",
 )
 class LinearTransferModuleInvocation(BaseInvocation):
-    """Module: Smoothly change modules based on step."""
+    """NP_MOD: Smoothly change modules based on step."""
     sub_module_1: Optional[ModuleData] = InputField(
         default=None,
         description="The custom module to use for the first noise prediction. No connection will use the default pipeline.",
-        title="SubModule 1",
+        title="[NP] SubModule 1",
         input=Input.Connection,
         ui_type=UIType.Any,
     )
     sub_module_2: Optional[ModuleData] = InputField(
         default=None,
         description="The custom module to use for the second noise prediction. No connection will use the default pipeline.",
-        title="SubModule 2",
+        title="[NP] SubModule 2",
         input=Input.Connection,
         ui_type=UIType.Any,
     )
@@ -756,10 +751,9 @@ class LinearTransferModuleInvocation(BaseInvocation):
         default=10,
     )
 
-    def invoke(self, context: InvocationContext) -> ModuleDataOutput:
-        module = ModuleData(
+    def invoke(self, context: InvocationContext) -> NP_ModuleDataOutput:
+        module = NP_ModuleData(
             name="Linear Transfer module",
-            module_type="do_unet_step",
             module="linear_transfer",
             module_kwargs={
                 "sub_module_1": self.sub_module_1,
@@ -769,7 +763,7 @@ class LinearTransferModuleInvocation(BaseInvocation):
             },
         )
 
-        return ModuleDataOutput(
+        return NP_ModuleDataOutput(
             module_data_output=module,
         )
 
@@ -785,11 +779,11 @@ class LinearTransferModuleInvocation(BaseInvocation):
     version="1.0.0",
 )
 class TiledDenoiseLatentsModuleInvocation(BaseInvocation):
-    """Module: Denoise latents using tiled noise prediction"""
+    """NP_MOD: Denoise latents using tiled noise prediction"""
     sub_module: Optional[ModuleData] = InputField(
         default=None,
         description="The custom module to use for each noise prediction tile. No connection will use the default pipeline.",
-        title="SubModules",
+        title="[NP] SubModules",
         input=Input.Connection,
         ui_type=UIType.Any,
     )
@@ -808,10 +802,9 @@ class TiledDenoiseLatentsModuleInvocation(BaseInvocation):
         multiple_of=8,
     )
 
-    def invoke(self, context: InvocationContext) -> ModuleDataOutput:
-        module = ModuleData(
+    def invoke(self, context: InvocationContext) -> NP_ModuleDataOutput:
+        module = NP_ModuleData(
             name="Tiled Denoise Latents module",
-            module_type="do_unet_step",
             module="multidiffusion_sampling",
             module_kwargs={
                 "sub_module": self.sub_module,
@@ -822,7 +815,7 @@ class TiledDenoiseLatentsModuleInvocation(BaseInvocation):
             },
         )
 
-        return ModuleDataOutput(
+        return NP_ModuleDataOutput(
             module_data_output=module,
         )
 
@@ -933,11 +926,11 @@ CHANNEL_VALUES = {
     version="1.0.2",
 )
 class ColorGuidanceModuleInvocation(BaseInvocation):
-    """Module: Color Guidance (fix SDXL yellow bias)"""
+    """NP_MOD: Color Guidance (fix SDXL yellow bias)"""
     sub_module: Optional[ModuleData] = InputField(
         default=None,
         description="The custom module to use for each noise prediction tile. No connection will use the default pipeline.",
-        title="SubModules",
+        title="[NP] SubModules",
         input=Input.Connection,
         ui_type=UIType.Any,
     )
@@ -965,13 +958,12 @@ class ColorGuidanceModuleInvocation(BaseInvocation):
         default=0,
     )
 
-    def invoke(self, context: InvocationContext) -> ModuleDataOutput:
+    def invoke(self, context: InvocationContext) -> NP_ModuleDataOutput:
 
         channels = CHANNEL_VALUES[self.channel_selection]
 
-        module = ModuleData(
+        module = NP_ModuleData(
             name="Color Guidance module",
-            module_type="do_unet_step",
             module="color_guidance",
             module_kwargs={
                 "sub_module": self.sub_module,
@@ -982,7 +974,7 @@ class ColorGuidanceModuleInvocation(BaseInvocation):
             },
         )
 
-        return ModuleDataOutput(
+        return NP_ModuleDataOutput(
             module_data_output=module,
         )
 
@@ -1054,11 +1046,11 @@ def color_offset(
     version="1.0.0",
 )
 class ColorOffsetModuleInvocation(BaseInvocation):
-    """Module: SD1 Color Offset"""
+    """NP_MOD: SD1 Color Offset"""
     sub_module: Optional[ModuleData] = InputField(
         default=None,
         description="The custom module to use for each noise prediction tile. No connection will use the default pipeline.",
-        title="SubModules",
+        title="[NP] SubModules",
         input=Input.Connection,
         ui_type=UIType.Any,
     )
@@ -1111,10 +1103,9 @@ class ColorOffsetModuleInvocation(BaseInvocation):
         input=Input.Direct,
     )
 
-    def invoke(self, context: InvocationContext) -> ModuleDataOutput:
-        module = ModuleData(
+    def invoke(self, context: InvocationContext) -> NP_ModuleDataOutput:
+        module = NP_ModuleData(
             name="Color Offset module",
-            module_type="do_unet_step",
             module="color_offset",
             module_kwargs={
                 "sub_module": self.sub_module,
@@ -1128,7 +1119,7 @@ class ColorOffsetModuleInvocation(BaseInvocation):
             },
         )
 
-        return ModuleDataOutput(
+        return NP_ModuleDataOutput(
             module_data_output=module,
         )
 
@@ -1171,7 +1162,7 @@ def skip_residual(
     version="1.0.0",
 )
 class SkipResidualModuleInvocation(BaseInvocation):
-    """Module: Skip Residual"""
+    """NP_MOD: Skip Residual"""
     latent_input: LatentsField = InputField(
         title="Latent Input",
         description="The base latent to use for the noise prediction (usually the same as the input for img2img)",
@@ -1183,10 +1174,9 @@ class SkipResidualModuleInvocation(BaseInvocation):
         input=Input.Connection,
     )
 
-    def invoke(self, context: InvocationContext) -> ModuleDataOutput:
-        module = ModuleData(
+    def invoke(self, context: InvocationContext) -> NP_ModuleDataOutput:
+        module = NP_ModuleData(
             name="Skip Residual module",
-            module_type="do_unet_step",
             module="skip_residual",
             module_kwargs={
                 "latent_input": self.latent_input,
@@ -1195,7 +1185,7 @@ class SkipResidualModuleInvocation(BaseInvocation):
             },
         )
 
-        return ModuleDataOutput(
+        return NP_ModuleDataOutput(
             module_data_output=module,
         )
 
@@ -1288,7 +1278,7 @@ def fooocus_sharpness_unet_step(
     version="1.0.0",
 )
 class FooocusSharpnessModuleInvocation(BaseInvocation):
-    """Module: Sharpness"""
+    """NP_MOD: Sharpness"""
     sharpness: float = InputField(
         title="Sharpness",
         description="The sharpness to apply to the noise prediction. Recommended Range: 2~30",
@@ -1296,16 +1286,15 @@ class FooocusSharpnessModuleInvocation(BaseInvocation):
         default=2,
     )
 
-    def invoke(self, context: InvocationContext) -> ModuleDataOutput:
-        module = ModuleData(
+    def invoke(self, context: InvocationContext) -> NP_ModuleDataOutput:
+        module = NP_ModuleData(
             name="Sharpness module",
-            module_type="do_unet_step",
             module="fooocus_sharpness_module",
             module_kwargs={
                 "sharpness": self.sharpness,
             },
         )
 
-        return ModuleDataOutput(
+        return NP_ModuleDataOutput(
             module_data_output=module,
         )

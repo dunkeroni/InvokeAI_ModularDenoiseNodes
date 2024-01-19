@@ -3,6 +3,7 @@ from invokeai.backend.stable_diffusion.diffusers_pipeline import StableDiffusion
 
 from invokeai.app.invocations.baseinvocation import (
     BaseInvocationOutput,
+    BaseInvocation,
     Input,
     InputField,
     InvocationContext,
@@ -12,7 +13,7 @@ from invokeai.app.invocations.baseinvocation import (
 )
 
 import math
-from typing import Callable, List, Optional, Any
+from typing import Callable, List, Optional, Any, Union
 
 import torch
 from invokeai.backend.ip_adapter.unet_patcher import UNetPatcher
@@ -25,17 +26,26 @@ from invokeai.backend.stable_diffusion.diffusers_pipeline import (
 )
 from pydantic import BaseModel, Field
 
-from .modular_decorators import get_noise_prediction_module
+from .modular_decorators import get_noise_prediction_module, get_post_noise_guidance_module, get_pre_noise_guidance_module
 
 import numpy as np
 
 import inspect #TODO: get rid of this garbage
 
-class ModuleData(BaseModel):
+class ModuleData(BaseModel): #use child classes for different module types
     name: str = Field(description="Name of the module")
-    module_type: str = Field(description="Type of module. Not yet used, may be in future")
+    module_type: str = Field(description="Type of the module")
     module: str = Field(description="Name of the module function")
     module_kwargs: dict | None = Field(description="Keyword arguments to pass to the module function")
+
+class NP_ModuleData(ModuleData):
+    module_type: str = Field(default="noise_pred", description="Type of the module")
+
+class PreG_ModuleData(ModuleData):
+    module_type: str = Field(default="pre_noise_guidance", description="Type of the module")
+
+class PoG_ModuleData(ModuleData):
+    module_type: str =  Field(default="post_noise_guidance", description="Type of the module")
 
 
 @invocation_output("module_data_output")
@@ -44,6 +54,77 @@ class ModuleDataOutput(BaseInvocationOutput):
         title="Module Data Output",
         description="Information for calling the module in denoise latents step()"
     )
+@invocation_output("np_module_data_output")
+class NP_ModuleDataOutput(BaseInvocationOutput):
+    module_data_output: ModuleData | None = OutputField(
+        title="[NP] Module Data",
+        description="Noise Prediction module data"
+    )
+@invocation_output("preg_module_data_output")
+class PreG_ModuleDataOutput(BaseInvocationOutput):
+    module_data_output: ModuleData | None = OutputField(
+        title="[PreG] Module Data",
+        description="PRE-Noise Guidance module data"
+    )
+@invocation_output("pog_module_data_output")
+class PoG_ModuleDataOutput(BaseInvocationOutput):
+    module_data_output: ModuleData | None = OutputField(
+        title="[PoG] Module Data",
+        description="POST-Noise Guidance module data"
+    )
+
+@invocation_output("module_data_collection_output")
+class ModuleDataCollectionOutput(BaseInvocationOutput):
+    module_data_output: list[ModuleData] | None = OutputField(
+        title="Collected Module Data",
+        description="Information for calling the modules in denoise latents"
+    )
+
+@invocation("module_collection",
+            title="Module Collection",
+            tags=["modular", "collection"],
+            category="modular",
+            version="1.0.0"
+            )
+class ModuleCollectionInvocation(BaseInvocation):
+    """Collects multiple module types together"""
+    pre_noise_module: ModuleData = InputField(
+        default=None,
+        description="Information for calling the module in denoise latents step()",
+        title="[PreG] Module Data",
+        input=Input.Connection,
+    )
+    noise_pred_module: ModuleData = InputField(
+        default=None,
+        description="Information for calling the module in denoise latents step()",
+        title="[NP] Module Data",
+        input=Input.Connection,
+    )
+    pog_noise_module: ModuleData = InputField(
+        default=None,
+        description="Information for calling the module in denoise latents step()",
+        title="[PoG] Module Data",
+        input=Input.Connection,
+    )
+
+    def invoke(self, context: InvocationContext) -> ModuleDataCollectionOutput:
+        #make sure list is always list[ModuleData] and does not included Nones
+        modules_list = []
+        if self.pre_noise_module is not None:
+            modules_list.append(self.pre_noise_module)
+        if self.noise_pred_module is not None:
+            modules_list.append(self.noise_pred_module)
+        if self.pog_noise_module is not None:
+            modules_list.append(self.pre_noise_module)
+        
+        if modules_list == []:
+            return ModuleDataCollectionOutput(
+                module_data_output=None
+            )
+
+        return ModuleDataCollectionOutput(
+            module_data_output=modules_list
+        )
 
 
 #INHERIT to add custom module input
@@ -52,10 +133,10 @@ class ModuleDataOutput(BaseInvocationOutput):
     title="Modular Denoise Latents",
     tags=["modular", "generate", "denoise", "latents"],
     category="modular",
-    version="1.4.0",
+    version="1.5.0",
 )
 class Modular_DenoiseLatentsInvocation(DenoiseLatentsInvocation):
-    module: Optional[ModuleData] = InputField(
+    module: Optional[Union[ModuleData, list[ModuleData]]] = InputField(
         default=None,
         description="Information to override the default unet_step functions",
         title="Custom Modules",
@@ -83,6 +164,10 @@ class Modular_DenoiseLatentsInvocation(DenoiseLatentsInvocation):
             So, I'm using inspect.stack() to get the context from the calling function [which is invoke(self, context)].
 
             If this ever gets merged into the main repo, just modify the create_pipeline() function to take a context argument.
+
+            UPDATE: There is a PR that should replace the need for context references with a solid API for nodes (PR #5491)
+                    Once it is merged into a release, this hack can be removed.
+
         """
         for f in inspect.stack():
             if "context" in f[0].f_locals:
@@ -107,9 +192,26 @@ class Modular_StableDiffusionGeneratorPipeline(StableDiffusionGeneratorPipeline)
 
     def __init__(self, *args, **kwargs):
         self.custom_module_data = kwargs.pop("custom_module_data", None)
+        self.noise_pred_module_data: ModuleData = self.find_first_module_of_type(self.custom_module_data, "noise_pred")
+        self.post_noise_guidance_module_data: ModuleData = self.find_first_module_of_type(self.custom_module_data, "post_noise_guidance")
+        self.pre_noise_guidance_module_data: ModuleData = self.find_first_module_of_type(self.custom_module_data, "pre_noise_guidance")
         self.persistent_data = {} # for modules storing data between steps
         self.context: InvocationContext = kwargs.pop("context", None)
         super().__init__(*args, **kwargs)
+
+
+    def find_first_module_of_type(self, module_data_input: Union[ModuleData, list[ModuleData]], module_type: str):
+        """Find the first module of the given type in the pipeline."""
+        if module_data_input is None:
+            return None
+
+        if isinstance(module_data_input, ModuleData):
+            module_data_input = [module_data_input]
+        
+        for module_data in module_data_input:
+            if module_data.module_type == module_type:
+                return module_data
+        return None # no module of given type found
 
 
     def check_persistent_data(self, id: str, key: str):
@@ -181,6 +283,19 @@ class Modular_StableDiffusionGeneratorPipeline(StableDiffusionGeneratorPipeline)
         if additional_guidance is None:
             additional_guidance = []
 
+        if self.pre_noise_guidance_module_data is not None:
+            # invoke custom module
+            pre_module_func: Callable = get_pre_noise_guidance_module(self.pre_noise_guidance_module_data.module)
+            pre_module_kwargs = self.pre_noise_guidance_module_data.module_kwargs
+            latents = pre_module_func(
+                self=self,
+                latents=latents,
+                t=t,
+                step_index=step_index,
+                total_step_count=total_step_count,
+                module_kwargs = pre_module_kwargs,
+            )
+
         # TODO: should this scaling happen here or inside self._unet_forward?
         #     i.e. before or after passing it to InvokeAIDiffuserComponent
         latent_model_input = self.scheduler.scale_model_input(latents, timestep)
@@ -203,15 +318,14 @@ class Modular_StableDiffusionGeneratorPipeline(StableDiffusionGeneratorPipeline)
                     ip_adapter_unet_patcher.set_scale(i, 0.0)
 
 
-        custom_module_data: ModuleData = self.custom_module_data
         # default to standard diffusion pipeline result
-        if custom_module_data is None:
+        if self.noise_pred_module_data is None:
             module_func: Callable = get_noise_prediction_module("standard_unet_step_module")
             module_kwargs = {}
         else:
             # invoke custom module
-            module_func: Callable = get_noise_prediction_module(custom_module_data.module)
-            module_kwargs = custom_module_data.module_kwargs
+            module_func: Callable = get_noise_prediction_module(self.noise_pred_module_data.module)
+            module_kwargs = self.noise_pred_module_data.module_kwargs
         ################################ CUSTOM SUBSTEP  ################################
         noise_pred, original_latents = module_func(
             self=self,
@@ -242,6 +356,19 @@ class Modular_StableDiffusionGeneratorPipeline(StableDiffusionGeneratorPipeline)
         #    no way to use it to apply an operation that happens after the last scheduler.step.
         for guidance in additional_guidance:
             step_output = guidance(step_output, timestep, conditioning_data)
+        
+        if self.post_noise_guidance_module_data is not None:
+            # invoke custom module
+            post_module_func: Callable = get_post_noise_guidance_module(self.post_noise_guidance_module_data.module)
+            post_module_kwargs = self.post_noise_guidance_module_data.module_kwargs
+            step_output = post_module_func(
+                self=self,
+                step_output=step_output,
+                t=t,
+                step_index=step_index,
+                total_step_count=total_step_count,
+                module_kwargs = post_module_kwargs,
+            )
 
         # restore internal counter
         if self.scheduler.order == 2:
