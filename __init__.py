@@ -6,11 +6,13 @@ from .noise_prediction_modules import (
     DilatedSamplingModuleInvocation,
     CosineDecayTransferModuleInvocation,
     LinearTransferModuleInvocation,
-    ColorGuidanceModuleInvocation,
     SkipResidualModuleInvocation,
     PerpNegStepModuleInvocation,
     FooocusSharpnessModuleInvocation,
-    ColorOffsetModuleInvocation,
 ) 
+from .pre_noise_guidance_modules import (
+    ColorOffsetModuleInvocation,
+    ColorGuidanceModuleInvocation,
+)
 from .analyse_latents import AnalyzeLatentsInvocation
 from .gradient_mask import CreateGradientMaskInvocation, ExtractLatentsMaskInvocation, ExtractMaskInvocation

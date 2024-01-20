@@ -68,7 +68,7 @@ def get_post_noise_guidance_module(name: str) -> Callable:
         Callable: module
     """
     if name is None:
-        return get_post_noise_guidance_module("standard_unet_step_module") #default case
+        return get_post_noise_guidance_module("default_case")
 
     if name not in POST_NOISE_GUIDANCE_MODULES:
         raise ValueError(f"Module with name {name} not registered.")
@@ -104,7 +104,7 @@ def get_pre_noise_guidance_module(name: str) -> Callable:
         Callable: module
     """
     if name is None:
-        return get_pre_noise_guidance_module("standard_unet_step_module") #default case
+        return get_pre_noise_guidance_module("default_case")
 
     if name not in PRE_NOISE_GUIDANCE_MODULES:
         raise ValueError(f"Module with name {name} not registered.")
