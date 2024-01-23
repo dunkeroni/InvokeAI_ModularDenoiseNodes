@@ -3,7 +3,7 @@ This node pack provides an injection point in a Denoise Latents Node that accept
 
 Please Note: I am not the original designer for most of these noise prediction methods. This is the work of talented and knowledgeable people. I am simply porting their discoveries into an architecture that lets me more easily manipulate and combine them.  
 
-### Node Types:
+### Module Types:
 Modules now have sub-types because certain operations needed to be moved for better control of the results.
 | Subtype | Description |
 | --- | --- |
@@ -12,6 +12,8 @@ Modules now have sub-types because certain operations needed to be moved for bet
 | PoG | Post-Noise Guidance: Makes changes to the result latent after the scheduler combines the noise prediction changes. Occurs directly after the default denoise mask guidance. |
 
 In order to use multiple types of module, you can use the Module Collection Node to organize them into a list. You can also use the default Collect node from Invoke. The result will be the same. Module Collection is just visual sugar to denote the types being fed in.  
+![image](https://github.com/dunkeroni/InvokeAI_ModularDenoiseNodes/assets/3298737/d7e33973-ae22-41d0-b738-1078d7f6301e)
+
 
 | Node | Type | Usage | Source |
 | --- | --- | --- | --- |
@@ -83,13 +85,20 @@ In the first pipeline, the Color Guidance node is a submodule of Tiled Denoise. 
 Here you can see the effects of the two. In the end, the total average brightness is the same. However, the first pipeline (left) has distinct banding where the individual tiles were attempting to match a target average brightness instead of the full image brightness being adjusted.  
 ![image](https://github.com/dunkeroni/InvokeAI_ModularDenoiseNodes/assets/3298737/0d9bc95a-52bd-4ba6-9f27-284cf2887652)
 
-## Developing New Modules
-Coming soon! For now if you want to code something new then just reference the ones I have here. The structure is very repetitive and simple to implement.
+### Example: Gradient Masking
+The Gradient Mask Module accepts a grayscale image as an input. If the image is not greyscale, it will be converted. Areas of the image will be included in the denoise process depending on their value and the current step.  
+White areas are never included.  
+Black areas are always included.  
+The mask will expand to include all of the gray areas by the end of denoising, with the speed profile dependent on either the current step number or the remaining denoise (option in the module).  
+![image](https://github.com/dunkeroni/InvokeAI_ModularDenoiseNodes/assets/3298737/be4ee744-eb02-43cc-98a3-7fe51e930b1b)  
+The above mask was used to denoise an image of "an unhappy potion seller" at full denoise strength (start=0, end=1). The default Invoke mask behavior is on the left, gradient mask is on the right.  
+![image](https://github.com/dunkeroni/InvokeAI_ModularDenoiseNodes/assets/3298737/149f038b-5401-4e07-841f-a84fd2c26ba7)
+
+
 
 ## Planned/Prospective Changes:  
 | Feature | Type | Usage |
 | --- | --- | --- |
 | ScaleCrafter | module | Original implementation of dilated sampling to get high resolution results. Not sure if it is applicable here, will need to look deeper into it. |
-| Perp negative | module | A more precise application of negative conditioning during noise prediction |
 | Adversarial Inpainting | module | Theoretically adds inpaint objects but replaces result with original where not significantly changed. Note to self: Noise Prediction = lerp(P, S, -wD) |
 | Architecture Tutorial | documentation | Need to create explanations for extending with custom modules. |
