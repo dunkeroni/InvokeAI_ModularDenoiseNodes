@@ -93,12 +93,6 @@ def apply_gradient_mask(
     mask_latent = self.check_persistent_data(module_id, "mask_latent")
     input_noise = self.check_persistent_data(module_id, "input_noise")
 
-    """What's happening here:
-    1. Create a noised input latent based on the current timestep (skip residual)
-    2. Create a threshhold mask based on the mask latent and the current timestep
-    3. For each point in the current input latents input, if the mask is above the threshhold, use the input latent. Otherwise, use the noise original latent.
-    """
-
     #1. Create a noised input latent based on the current timestep (skip residual)
     noised_original_latents = self.scheduler.add_noise(original_latents, input_noise, t)
 
@@ -107,12 +101,11 @@ def apply_gradient_mask(
         threshhold = step_index / total_step_count
     elif scaling == "denoise":
         threshhold = 1 - (t.item() / self.scheduler.config.num_train_timesteps)
-    else:
-        raise ValueError(f"Invalid scaling {scaling}")
+
     #build mask with threshhold
     mask_bool = (mask_latent < threshhold)
 
-    #3. For each point in the current input latents input, if the mask is above the threshhold, use the input latent. Otherwise, use the noise original latent.
+    #3. For each point, if the mask is above the threshhold, use the input latent. Otherwise, use the noise original latent.
     result_latents = torch.where(mask_bool, sub_latents, noised_original_latents)
 
     return result_latents

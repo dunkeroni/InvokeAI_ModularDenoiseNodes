@@ -359,8 +359,7 @@ class Modular_StableDiffusionGeneratorPipeline(StableDiffusionGeneratorPipeline)
         for guidance in additional_guidance:
             step_output = guidance(step_output, timestep, conditioning_data)
         
-        prev_sample = step_output["prev_sample"]
-
+        prev_sample = step_output["prev_sample"] #TODO: Check that this works for all samplers
         if self.post_noise_guidance_module_data is not None:
             # invoke custom module
             post_module_func: Callable = get_post_noise_guidance_module(self.post_noise_guidance_module_data.module)
