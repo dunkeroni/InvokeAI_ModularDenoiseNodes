@@ -55,19 +55,19 @@ class ModuleDataOutput(BaseInvocationOutput):
         description="Information for calling the module in denoise latents step()"
     )
 @invocation_output("np_module_data_output")
-class NP_ModuleDataOutput(BaseInvocationOutput):
+class NP_ModuleDataOutput(ModuleDataOutput):
     module_data_output: ModuleData | None = OutputField(
         title="[NP] Module Data",
         description="Noise Prediction module data"
     )
 @invocation_output("preg_module_data_output")
-class PreG_ModuleDataOutput(BaseInvocationOutput):
+class PreG_ModuleDataOutput(ModuleDataOutput):
     module_data_output: ModuleData | None = OutputField(
         title="[PreG] Module Data",
         description="PRE-Noise Guidance module data"
     )
 @invocation_output("pog_module_data_output")
-class PoG_ModuleDataOutput(BaseInvocationOutput):
+class PoG_ModuleDataOutput(ModuleDataOutput):
     module_data_output: ModuleData | None = OutputField(
         title="[PoG] Module Data",
         description="POST-Noise Guidance module data"
@@ -184,6 +184,7 @@ class Modular_DenoiseLatentsInvocation(DenoiseLatentsInvocation):
             requires_safety_checker=False,
             custom_module_data=self.module, #NEW field for custom module in pipeline
             context=context, #NEW for when modules need to load external data
+            denoise_node=self, #NEW for when modules need to load input data
         )
 
 
@@ -197,6 +198,7 @@ class Modular_StableDiffusionGeneratorPipeline(StableDiffusionGeneratorPipeline)
         self.pre_noise_guidance_module_data: ModuleData = self.find_first_module_of_type(self.custom_module_data, "pre_noise_guidance")
         self.persistent_data = {} # for modules storing data between steps
         self.context: InvocationContext = kwargs.pop("context", None)
+        self.denoise_node: Modular_DenoiseLatentsInvocation = kwargs.pop("denoise_node", None)
         super().__init__(*args, **kwargs)
 
 
@@ -357,21 +359,29 @@ class Modular_StableDiffusionGeneratorPipeline(StableDiffusionGeneratorPipeline)
         for guidance in additional_guidance:
             step_output = guidance(step_output, timestep, conditioning_data)
         
+        prev_sample = step_output["prev_sample"]
+
         if self.post_noise_guidance_module_data is not None:
             # invoke custom module
             post_module_func: Callable = get_post_noise_guidance_module(self.post_noise_guidance_module_data.module)
             post_module_kwargs = self.post_noise_guidance_module_data.module_kwargs
-            step_output = post_module_func(
+            modified_step_output = post_module_func(
                 self=self,
-                step_output=step_output,
+                step_output=prev_sample,
                 t=t,
                 step_index=step_index,
                 total_step_count=total_step_count,
                 module_kwargs = post_module_kwargs,
             )
+            
+            step_output["prev_sample"] = modified_step_output
 
         # restore internal counter
         if self.scheduler.order == 2:
             self.scheduler._index_counter[timestep.item()] += 1
 
         return step_output
+
+
+def are_like_tensors(a: torch.Tensor, b: object) -> bool:
+    return isinstance(b, torch.Tensor) and (a.size() == b.size())

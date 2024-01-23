@@ -47,7 +47,7 @@ def color_offset(
     t: torch.Tensor,
     module_kwargs: dict | None,
     **kwargs,
-) -> tuple[torch.Tensor, torch.Tensor]:
+) -> torch.Tensor:
     sub_module, sub_module_kwargs = resolve_module(module_kwargs["sub_module"])
     red = module_kwargs["red"]
     green = module_kwargs["green"]
@@ -237,7 +237,7 @@ def color_guidance(
     t: torch.Tensor,
     module_kwargs: dict | None,
     **kwargs,
-) -> tuple[torch.Tensor, torch.Tensor]:
+) -> torch.Tensor:
     sub_module, sub_module_kwargs = resolve_module(module_kwargs["sub_module"])
     expand_dynamic_range = False #module_kwargs["expand_dynamic_range"]
     #dynamic_range = module_kwargs["dynamic_range"]

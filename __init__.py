@@ -14,5 +14,7 @@ from .pre_noise_guidance_modules import (
     ColorOffsetModuleInvocation,
     ColorGuidanceModuleInvocation,
 )
+from .post_noise_guidance_modules import (
+    GradientMaskModuleInvocation,
+)
 from .analyse_latents import AnalyzeLatentsInvocation
-from .gradient_mask import CreateGradientMaskInvocation, ExtractLatentsMaskInvocation, ExtractMaskInvocation
