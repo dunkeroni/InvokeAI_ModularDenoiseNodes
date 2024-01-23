@@ -2,18 +2,32 @@
 This node pack provides an injection point in a Denoise Latents Node that accepts replacement functions to modify the noise prediction process. This allows rapid development of customized pipelines as well as the ability to combine techniques from multiple research papers without having to edit Denoise Latents every time.  
 
 Please Note: I am not the original designer for most of these noise prediction methods. This is the work of talented and knowledgeable people. I am simply porting their discoveries into an architecture that lets me more easily manipulate and combine them.  
-| Node | Usage | Source |
-| --- | --- | --- |
-| Standard UNet Step Module | Calls up the default noise prediction behavior. Should be the same as not connecting a module input, unless someone forgets to check for that behavior. | InvokeAI Base |
-| MultiDiffusion Module | Splits the denoise process into multiple overlapping tiles. Adds generation time but reduces VRAM usage. Randomly shifts tiles each step to prevent visible seams. The random movement requires an additional buffer to be added around the latent. The buffer padding mode can be selected on the node. Breaks with t2i adapters. | https://multidiffusion.github.io/ |
-| Dilated Sampling Module | Splits the denoise process into multiple interwoven latent tiles. Reduces VRAM usage. Dramatically reduces quality. Used in the DemoFusion process to maintain structure for MultiDiffusion via a cosine decay transfer. | https://ruoyidu.github.io/demofusion/demofusion.html |
-| Cosine Decay Transfer | Smoothly changes over from one pipeline to another based on the remaining denoise value. Higher decay values swap over sooner. | https://ruoyidu.github.io/demofusion/demofusion.html |
-| Linear Transfer | Smoothly changes over from one pipeline to another based on the current step index. | N/A |
-| Latent Color Guidance | Still considering the best way to go about this. Adjusts denoise process to keep color distribution near average. Fixes yellow drift in SDXL. Boost color range as well. | https://huggingface.co/blog/TimothyAlexisVass/explaining-the-sdxl-latent-space |
-| Tiled Denoise | Splits the denoise process into multiple overlapping tiles. Adds generation time but reduces VRAM usage. Tile positions are maintained with a static minimum overlap. | N/A |
-| Skip Residual | Instead of predicting noise, create a timestep% noised version of the input latent. | https://ruoyidu.github.io/demofusion/demofusion.html |
-| Analyze Latents | I originally put this in for debugging, but it's pretty helpful for tuning the color guidance module. | N/A |
-| Perp Negative | Under Construction: Only applies the parts of the negative prompt that do not conflict with the positive prompt. | https://perp-neg.github.io/ |
+
+### Node Types:
+Modules now have sub-types because certain operations needed to be moved for better control of the results.
+| Subtype | Description |
+| --- | --- |
+| NP | Noise Prediction: The original module type from this node pack. NP modules affect how the unet calculates and applies the current step. |
+| PreG | Pre-Noise Guidance: Makes changes to the current latent before noise prediction and sampler scaling (some samplers scale the values before the unet is applied) |
+| PoG | Post-Noise Guidance: Makes changes to the result latent after the scheduler combines the noise prediction changes. Occurs directly after the default denoise mask guidance. |
+
+In order to use multiple types of module, you can use the Module Collection Node to organize them into a list. You can also use the default Collect node from Invoke. The result will be the same. Module Collection is just visual sugar to denote the types being fed in.  
+
+| Node | Type | Usage | Source |
+| --- | --- | --- | --- |
+| Standard UNet Step Module | NP | Calls up the default noise prediction behavior. Should be the same as not connecting a module input, unless someone forgets to check for that behavior. | InvokeAI Base |
+| MultiDiffusion Module | NP | Splits the denoise process into multiple overlapping tiles. Adds generation time but reduces VRAM usage. Randomly shifts tiles each step to prevent visible seams. The random movement requires an additional buffer to be added around the latent. The buffer padding mode can be selected on the node. Breaks with t2i adapters. | https://multidiffusion.github.io/ |
+| Dilated Sampling Module | NP | Splits the denoise process into multiple interwoven latent tiles. Reduces VRAM usage. Dramatically reduces quality. Used in the DemoFusion process to maintain structure for MultiDiffusion via a cosine decay transfer. | https://ruoyidu.github.io/demofusion/demofusion.html |
+| Cosine Decay Transfer | NP | Smoothly changes over from one pipeline to another based on the remaining denoise value. Higher decay values swap over sooner. | https://ruoyidu.github.io/demofusion/demofusion.html |
+| Linear Transfer | NP | Smoothly changes over from one pipeline to another based on the current step index. | N/A |
+| Tiled Denoise | NP | Splits the denoise process into multiple overlapping tiles. Adds generation time but reduces VRAM usage. Tile positions are maintained with a static minimum overlap. | N/A |
+| Skip Residual | NP | Instead of predicting noise, create a timestep% noised version of the input latent. | https://ruoyidu.github.io/demofusion/demofusion.html |
+| Analyze Latents | NP | I originally put this in for debugging, but it's pretty helpful for tuning the color guidance module. | N/A |
+| Perp Negative | NP | Under Construction: Only applies the parts of the negative prompt that do not conflict with the positive prompt. | https://perp-neg.github.io/ |
+| Sharpness | NP | From Fooocus. Supposed to improve sharpness without affecting composition. Doesn't really do much. Might only be necessary with Fooocus's pipelines. | https://github.com/lllyasviel/Fooocus/blob/176faf6f347b90866afe676fc9fb2c2d74587d7b/modules/patch.py |
+| Color Guidance SDXL | PreG | Adjusts denoise process to keep color distribution near average. Fixes yellow drift in SDXL, or lets you specify color/brightness/contrast adjustments. | https://huggingface.co/blog/TimothyAlexisVass/explaining-the-sdxl-latent-space |
+| Color Offset SD1 | PreG | Applies offsets to the latent layers between each step to achieved specific RGB color changes. Highly dependent on sampler. Recommend starting with Euler A to test. | https://github.com/Haoming02/sd-webui-vectorscope-cc |
+| Gradient Masking | PoG | Instead of denoising a masked area and using mask blur to interpolate the results, gradient mask dynamically adjustst the mask threshold to include more of the mask blur in later steps, improving edge details without having to make a second pass. |
 
 ## Using modules
 The new Modular Denoise Latents node added by this pack includes an input for "Custom Modules". The node inherits from InvokeAI's built-in Denoise Latents Invocation, and if you do not connect any modules then it will function exactly the same as the default denoise node does. As a result, these module nodes should also be forward-compatible with almost any updates to InvokeAI. You can use the Modular Denoise Latents node anywhere that you would use the normal node in case you want to add modules in the future without having to remake the rest of the connections.  
