@@ -289,6 +289,7 @@ class Modular_StableDiffusionGeneratorPipeline(StableDiffusionGeneratorPipeline)
             # invoke custom module
             pre_module_func: Callable = get_pre_noise_guidance_module(self.pre_noise_guidance_module_data.module)
             pre_module_kwargs = self.pre_noise_guidance_module_data.module_kwargs
+            latents_type = latents.dtype
             latents = pre_module_func(
                 self=self,
                 latents=latents,
@@ -297,6 +298,7 @@ class Modular_StableDiffusionGeneratorPipeline(StableDiffusionGeneratorPipeline)
                 total_step_count=total_step_count,
                 module_kwargs = pre_module_kwargs,
             )
+            latents = latents.to(dtype=latents_type)
 
         # TODO: should this scaling happen here or inside self._unet_forward?
         #     i.e. before or after passing it to InvokeAIDiffuserComponent
@@ -359,12 +361,13 @@ class Modular_StableDiffusionGeneratorPipeline(StableDiffusionGeneratorPipeline)
         for guidance in additional_guidance:
             step_output = guidance(step_output, timestep, conditioning_data)
         
-        prev_sample = step_output["prev_sample"] #TODO: Check that this works for all samplers
+        prev_sample: torch.Tensor = step_output["prev_sample"] #TODO: Check that this works for all samplers
+        latent_type = prev_sample.dtype
         if self.post_noise_guidance_module_data is not None:
             # invoke custom module
             post_module_func: Callable = get_post_noise_guidance_module(self.post_noise_guidance_module_data.module)
             post_module_kwargs = self.post_noise_guidance_module_data.module_kwargs
-            modified_step_output = post_module_func(
+            modified_step_output: torch.Tensor = post_module_func(
                 self=self,
                 step_output=prev_sample,
                 t=t,
@@ -373,7 +376,7 @@ class Modular_StableDiffusionGeneratorPipeline(StableDiffusionGeneratorPipeline)
                 module_kwargs = post_module_kwargs,
             )
             
-            step_output["prev_sample"] = modified_step_output
+            step_output["prev_sample"] = modified_step_output.to(dtype=latent_type)
 
         # restore internal counter
         if self.scheduler.order == 2:
