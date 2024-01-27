@@ -144,7 +144,7 @@ def perp_neg_do_unet_step(
         unconditional_conditioning_data = self.check_persistent_data(module_id, "unconditional_conditioning_data")
         if unconditional_conditioning_data is None:
             # format conditioning data
-            unconditional_name: ConditioningField = module_kwargs["unconditional_name"]
+            unconditional_name: str = module_kwargs["unconditional_name"]
             unconditional_data = self.context.services.latents.get(unconditional_name)
             c = unconditional_data.conditionings[0].to(device=latents.device, dtype=latents.dtype)
             extra_conditioning_info = c.extra_conditioning
@@ -767,6 +767,132 @@ class LinearTransferModuleInvocation(BaseInvocation):
             module_data_output=module,
         )
 
+
+####################################################################################################
+# Transfer Function: Switch
+####################################################################################################
+
+@invocation("switch_transfer_module",
+    title="Switch Transfer",
+    tags=["module", "modular"],
+    category="modular",
+    version="1.0.0",
+)
+class SwitchTransferModuleInvocation(BaseInvocation):
+    """NP_MOD: Switch between two pipelines at a specific step."""
+    sub_module_1: Optional[ModuleData] = InputField(
+        default=None,
+        description="The custom module to use for the first noise prediction. No connection will use the default pipeline.",
+        title="[NP] SubModule 1",
+        input=Input.Connection,
+        ui_type=UIType.Any,
+    )
+    sub_module_2: Optional[ModuleData] = InputField(
+        default=None,
+        description="The custom module to use for the second noise prediction. No connection will use the default pipeline.",
+        title="[NP] SubModule 2",
+        input=Input.Connection,
+        ui_type=UIType.Any,
+    )
+    switch_step: int = InputField(
+        title="Switch Step",
+        description="The step index at which to switch from the first noise prediction to the second",
+        ge=0,
+        default=10,
+    )
+
+    def invoke(self, context: InvocationContext) -> NP_ModuleDataOutput:
+        module = NP_ModuleData(
+            name="Switch Transfer module",
+            module="linear_transfer",
+            module_kwargs={
+                "sub_module_1": self.sub_module_1,
+                "sub_module_2": self.sub_module_2,
+                "start_step": self.switch_step - 1,
+                "end_step": self.switch_step,
+            },
+        )
+
+        return NP_ModuleDataOutput(
+            module_data_output=module,
+        )
+
+####################################################################################################
+# Transfer Function: Constant
+####################################################################################################
+@module_noise_pred("constant_transfer")
+def constant_transfer(
+    self: Modular_StableDiffusionGeneratorPipeline,
+    module_kwargs: dict | None,
+    **kwargs,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    sub_module_1, sub_module_1_kwargs = resolve_module(module_kwargs["sub_module_1"])
+    sub_module_2, sub_module_2_kwargs = resolve_module(module_kwargs["sub_module_2"])
+    ratio = module_kwargs["ratio"]
+
+    pred_1, latents_1 = sub_module_1(
+        self=self,
+        module_kwargs=sub_module_1_kwargs,
+        **kwargs,
+    )
+
+    pred_2, latents_2 = sub_module_2(
+        self=self,
+        module_kwargs=sub_module_2_kwargs,
+        **kwargs,
+    )
+
+    total_noise_pred = torch.lerp(pred_1, pred_2, ratio)
+    total_original_latents = torch.lerp(latents_1, latents_2, ratio)
+
+    return total_noise_pred, total_original_latents
+
+@invocation("constant_transfer_module",
+    title="Constant Transfer",
+    tags=["module", "modular"],
+    category="modular",
+    version="1.0.0",
+)
+class ConstantTransferModuleInvocation(BaseInvocation):
+    """NP_MOD: Constantly use a ratio of two noise predictions."""
+    sub_module_1: Optional[ModuleData] = InputField(
+        default=None,
+        description="The custom module to use for the first noise prediction. No connection will use the default pipeline.",
+        title="[NP] SubModule 1",
+        input=Input.Connection,
+        ui_type=UIType.Any,
+    )
+    sub_module_2: Optional[ModuleData] = InputField(
+        default=None,
+        description="The custom module to use for the second noise prediction. No connection will use the default pipeline.",
+        title="[NP] SubModule 2",
+        input=Input.Connection,
+        ui_type=UIType.Any,
+    )
+    ratio: float = InputField(
+        title="Ratio",
+        description="The ratio of the first noise prediction to the second. A ratio of 0.5 will use an even mix of both.",
+        ge=0,
+        le=1,
+        default=0.5,
+    )
+
+    def invoke(self, context: InvocationContext) -> NP_ModuleDataOutput:
+        module = NP_ModuleData(
+            name="Constant Transfer module",
+            module="constant_transfer",
+            module_kwargs={
+                "sub_module_1": self.sub_module_1,
+                "sub_module_2": self.sub_module_2,
+                "ratio": self.ratio,
+            },
+        )
+
+        return NP_ModuleDataOutput(
+            module_data_output=module,
+        )
+
+
 ####################################################################################################
 # Tiled Denoise Latents
 ####################################################################################################
@@ -988,6 +1114,123 @@ class FooocusSharpnessModuleInvocation(BaseInvocation):
             module="fooocus_sharpness_module",
             module_kwargs={
                 "sharpness": self.sharpness,
+            },
+        )
+
+        return NP_ModuleDataOutput(
+            module_data_output=module,
+        )
+
+####################################################################################################
+# Override Conditioning
+####################################################################################################
+"""
+Replace the denoise latents conditioning data with a custom set of conditioning data.
+"""
+
+@module_noise_pred("override_conditioning")
+def override_conditioning(
+    self: Modular_StableDiffusionGeneratorPipeline,
+    latents: torch.Tensor,
+    conditioning_data: ConditioningData,
+    module_kwargs: dict | None,
+    **kwargs,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    sub_module, sub_module_kwargs = resolve_module(module_kwargs["sub_module"])
+    new_cfg = module_kwargs["cfg"]
+    cfg_rescale = module_kwargs["cfg_rescale"]
+    new_conditioning_data = self.check_persistent_data(module_kwargs["module_id"], "conditioning_data")
+    if new_conditioning_data is None:
+        positives: str = module_kwargs["positive_conditioning_data"]
+        negatives: str = module_kwargs["negative_conditioning_data"]
+        if positives is not None:
+            c = self.context.services.latents.get(positives).conditionings[0].to(device=latents.device, dtype=latents.dtype)
+            extra_conditioning_info = c.extra_conditioning
+        else:
+            c = conditioning_data.text_embeddings.conditionings[0].to(device=latents.device, dtype=latents.dtype)
+            extra_conditioning_info = conditioning_data.extra
+        
+        if negatives is not None:
+            uc = self.context.services.latents.get(negatives)
+        else:
+            uc = conditioning_data.unconditioned_embeddings
+        
+        new_conditioning_data = ConditioningData(
+            unconditioned_embeddings=uc,
+            text_embeddings=c,
+            guidance_scale=new_cfg,
+            guidance_rescale_multiplier=cfg_rescale,
+            extra=extra_conditioning_info,
+            postprocessing_settings=PostprocessingSettings(
+                threshold=0.0,  # threshold,
+                warmup=0.2,  # warmup,
+                h_symmetry_time_pct=None,  # h_symmetry_time_pct,
+                v_symmetry_time_pct=None,  # v_symmetry_time_pct,
+            ),
+        )
+        self.set_persistent_data(module_kwargs["module_id"], "conditioning_data", new_conditioning_data)
+    
+    noise_pred, latents = sub_module(
+        self=self,
+        latents=latents,
+        conditioning_data=new_conditioning_data,
+        module_kwargs=sub_module_kwargs,
+        **kwargs,
+    )
+
+    return noise_pred, latents
+
+@invocation("override_conditioning_module",
+    title="Override Conditioning Module",
+    tags=["module", "modular"],
+    category="modular",
+    version="1.0.0",
+)
+class OverrideConditioningModuleInvocation(BaseInvocation):
+    """NP_MOD: Override Conditioning"""
+    sub_module: Optional[ModuleData] = InputField(
+        default=None,
+        description="The custom module to use for each noise prediction tile. No connection will use the default pipeline.",
+        title="[NP] SubModules",
+        input=Input.Connection,
+        ui_type=UIType.Any,
+    )
+    positive_conditioning_data: Optional[ConditioningField] = InputField(
+        default=None,
+        description="The positive conditioning data to use for the noise prediction. No connection will use the default pipeline.",
+        title="Positive Conditioning",
+        input=Input.Connection,
+    )
+    negative_conditioning_data: Optional[ConditioningField] = InputField(
+        default=None,
+        description="The negative conditioning data to use for the noise prediction. No connection will use the default pipeline.",
+        title="Negative Conditioning",
+        input=Input.Connection,
+    )
+    cfg: float = InputField(
+        title="CFG Scale",
+        ge=1,
+        default=7.5,
+    )
+    cfg_rescale: float = InputField(
+        title="CFG Rescale Multiplier",
+        ge=0,
+        lt=1,
+    )
+
+    def invoke(self, context: InvocationContext) -> NP_ModuleDataOutput:
+        c = self.positive_conditioning_data.conditioning_name if self.positive_conditioning_data is not None else None
+        uc = self.negative_conditioning_data.conditioning_name if self.negative_conditioning_data is not None else None
+        module = NP_ModuleData(
+            name="Override Conditioning module",
+            module="override_conditioning",
+            module_kwargs={
+                "sub_module": self.sub_module,
+                "positive_conditioning_data": c,
+                "negative_conditioning_data": uc,
+                "cfg": self.cfg,
+                "cfg_rescale": self.cfg_rescale,
+                "module_id": self.id,
             },
         )
 
