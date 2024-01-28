@@ -892,6 +892,64 @@ class ConstantTransferModuleInvocation(BaseInvocation):
             module_data_output=module,
         )
 
+####################################################################################################
+# Transfer Function: Parallel
+####################################################################################################
+"""takes in a list of submodules and runs them all in parallel, then averages the results"""
+@module_noise_pred("parallel_transfer")
+def parallel_transfer(
+    self: Modular_StableDiffusionGeneratorPipeline,
+    module_kwargs: dict | None,
+    latents: torch.Tensor, #to make distinct clones
+    **kwargs,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    sub_modules: list[ModuleData] = module_kwargs["sub_modules"]
+
+    noise_pred_list = []
+    latent_list = []
+    for i, sub in enumerate(sub_modules):
+        sub_module, sub_module_kwargs = resolve_module(sub)
+        pred, orig_sub_latent = sub_module(
+            self=self,
+            latents=latents.clone(), #clone to avoid modifying the original
+            module_kwargs=sub_module_kwargs,
+            **kwargs,
+        )
+        noise_pred_list.append(pred)
+        latent_list.append(orig_sub_latent)
+    total_noise_pred = torch.mean(torch.stack(noise_pred_list), dim=0)
+    total_original_latents = torch.mean(torch.stack(latent_list), dim=0)
+
+    return total_noise_pred, total_original_latents
+
+@invocation("parallel_transfer_module",
+    title="Parallel Transfer",
+    tags=["module", "modular"],
+    category="modular",
+    version="1.0.0",
+)
+class ParallelTransferModuleInvocation(BaseInvocation):
+    """NP_MOD: Run multiple noise predictions in parallel."""
+    sub_modules: list[ModuleData] = InputField(
+        default=[],
+        description="The custom modules to use for each noise prediction. No connection will use the default pipeline.",
+        title="[NP] SubModules",
+        input=Input.Connection,
+        ui_type=UIType.Collection,
+    )
+
+    def invoke(self, context: InvocationContext) -> NP_ModuleDataOutput:
+        module = NP_ModuleData(
+            name="Parallel Transfer module",
+            module="parallel_transfer",
+            module_kwargs={
+                "sub_modules": self.sub_modules,
+            },
+        )
+
+        return NP_ModuleDataOutput(
+            module_data_output=module,
+        )
 
 ####################################################################################################
 # Tiled Denoise Latents
