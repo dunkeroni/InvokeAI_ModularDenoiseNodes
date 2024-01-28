@@ -4,20 +4,26 @@ from .modular_denoise_latents import Modular_StableDiffusionGeneratorPipeline, M
 from invokeai.backend.stable_diffusion.diffusion.conditioning_data import ConditioningData
 from invokeai.backend.stable_diffusion.diffusers_pipeline import ControlNetData, T2IAdapterData
 from invokeai.backend.stable_diffusion.diffusion.shared_invokeai_diffusion import PostprocessingSettings
-from invokeai.app.invocations.primitives import LatentsField
+from invokeai.app.invocations.primitives import LatentsField, ImageField
 from invokeai.app.invocations.compel import ConditioningField
+from pydantic import BaseModel, Field
 import torch
-from typing import Literal, Optional, Callable, List
+from typing import Literal, Optional, Callable, List, Union
+from PIL import ImageFilter
 import random
+import numpy as np
 import torch.nn.functional as F
 
 from invokeai.app.invocations.baseinvocation import (
     BaseInvocation,
+    BaseInvocationOutput,
     Input,
     InputField,
+    OutputField,
     InvocationContext,
     UIType,
     invocation,
+    invocation_output,
 )
 
 
@@ -935,7 +941,6 @@ class ParallelTransferModuleInvocation(BaseInvocation):
         description="The custom modules to use for each noise prediction. No connection will use the default pipeline.",
         title="[NP] SubModules",
         input=Input.Connection,
-        ui_type=UIType.Collection,
     )
 
     def invoke(self, context: InvocationContext) -> NP_ModuleDataOutput:
@@ -1288,6 +1293,242 @@ class OverrideConditioningModuleInvocation(BaseInvocation):
                 "negative_conditioning_data": uc,
                 "cfg": self.cfg,
                 "cfg_rescale": self.cfg_rescale,
+                "module_id": self.id,
+            },
+        )
+
+        return NP_ModuleDataOutput(
+            module_data_output=module,
+        )
+
+####################################################################################################
+# Regional Noise Prediction
+####################################################################################################
+class RegionalNoisePredictionData(BaseModel):
+    region_mask_image: str = Field(description="Name of the saved image to use as a mask for the region")
+    blur: float = Field(description="The amount to blur the mask")
+    crop: bool = Field(description="Whether to crop the region to the size of the mask")
+    crop_padding: int = Field(description="Padding (latent) to add to the region crop")
+    weight: float = Field(description="Weight to apply to the region")
+    sub_module: Optional[ModuleData] = Field(description="The custom module to use for the region. No connection will use the default pipeline.", default=None)
+
+@invocation_output("regional_noise_pred_output")
+class RegionalNoisePredictionOutput(BaseInvocationOutput):
+    data: RegionalNoisePredictionData = OutputField(description="The regional noise prediction data")
+
+@invocation("regional_module",
+    title="Regional Guidance Info",
+    tags=["module", "modular"],
+    category="modular",
+    version="1.0.0",
+)
+class RegionalNoiseDataModuleInvocation(BaseInvocation):
+    """NP_MOD: Regional Info"""
+    sub_module: Optional[ModuleData] = InputField(
+        default=None,
+        description="The custom module to use for the region. No connection will use the default pipeline.",
+        title="[NP] SubModules",
+        input=Input.Connection,
+        ui_type=UIType.Any,
+    )
+    region_mask: ImageField = InputField(
+        title="Region Mask",
+        description="The mask to use for the region",
+    )
+    blur: float = InputField(
+        title="Blur",
+        description="The amount to blur the mask",
+        ge=0,
+        default=0,
+    )
+    crop: bool = InputField(
+        title="Crop",
+        description="Whether to crop the region to the size of the mask",
+        default=False,
+    )
+    crop_padding: int = InputField(
+        title="Crop Padding",
+        description="Padding (latent) to add to the region crop",
+        default=0,
+    )
+    weight: float = InputField(
+        title="Weight",
+        description="Weight to apply to the region",
+        default=1.0,
+    )
+
+    def invoke(self, context: InvocationContext) -> RegionalNoisePredictionOutput:
+        module = RegionalNoisePredictionData(
+            region_mask_image=self.region_mask.image_name,
+            blur=self.blur,
+            crop=self.crop,
+            crop_padding=self.crop_padding,
+            weight=self.weight,
+            sub_module=self.sub_module,
+        )
+
+        return RegionalNoisePredictionOutput(
+            data=module,
+        )
+
+@module_noise_pred("regional_noise_pred")
+def regional_noise_pred(
+    self: Modular_StableDiffusionGeneratorPipeline,
+    latents: torch.Tensor,
+    t: torch.Tensor,
+    module_kwargs: dict | None,
+    control_data: List[ControlNetData] = None, #prevent from being passed in kwargs
+    t2i_adapter_data: list[T2IAdapterData] = None, #prevent from being passed in kwargs
+    **kwargs,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Default Sub Module: Applied to the entire latents input
+    region_info: list of RegionalNoisePredictionData
+        Each region_info element has a submodule and a mask where it gets applied
+    Results of the default and all regions are added together based on the region weights, then divided by the sum of the weights
+    """
+    sub_module, sub_module_kwargs = resolve_module(module_kwargs["default_sub_module"])
+    region_info: list[dict] = module_kwargs["region_info"] #gets serialized into a dict instead of a list
+    default_weight = module_kwargs["default_weight"]
+
+    default_noise_pred, default_latents = sub_module(
+        self=self,
+        latents=latents,
+        t=t,
+        module_kwargs=sub_module_kwargs,
+        control_data=None,
+        t2i_adapter_data=None,
+        **kwargs,
+    )
+    total_noise_pred = default_noise_pred * default_weight
+    total_latents = default_latents * default_weight
+    total_weight = torch.ones_like(default_noise_pred) * default_weight
+
+    #TODO: This whole persistent data setup is a bit of a mess. Something to consider during a rework towards object-based modules in the future.
+    if self.check_persistent_data(module_kwargs["module_id"], "initialized") is None:
+        # preprocess the masks
+        masklist = []
+        crop_tuples = []
+        for region in region_info:
+            mask = self.context.services.images.get_pil_image(region["region_mask_image"])
+            if region["blur"] > 0:
+                blur = ImageFilter.BoxBlur(region["blur"])
+                mask = mask.filter(blur)
+            mask = torch.from_numpy(np.asarray(mask.convert("L"))).to(latents.device)
+            #scale the values between 0 and 1
+            mask = mask / 255.0
+            #repeat the mask so it has the same shape as the latents
+            mask = mask.repeat(latents.shape[0], 4, 1, 1)
+            #scale the mask to have the same X and Y dimensions as the latents
+            mask = F.interpolate(mask, size=latents.shape[2:], mode="bilinear", align_corners=False)
+            masklist.append(mask)
+            self.set_persistent_data(module_kwargs["module_id"], "masklist", masklist)
+
+            
+            if region["crop"]:
+                #determine rectangular bounds of the mask, any values < 1 are considered part of the mask
+                mask_bounds = torch.nonzero(mask[0,0,:,:] < 1)
+                #get the min and max values for each dimension
+                min_x = torch.min(mask_bounds[:,0])
+                max_x = torch.max(mask_bounds[:,0])
+                min_y = torch.min(mask_bounds[:,1])
+                max_y = torch.max(mask_bounds[:,1])
+                """
+                Fix boundaries:
+                bounds should be shifted out by crop_padding
+                max - min should be expanded to the nearest multiple of 8
+                mins and maxs need to be adjusted to stay inside of the latents boundaries
+                """
+                min_x = max(min_x - region["crop_padding"], 0)
+                max_x = min(max_x + region["crop_padding"], latents.shape[2])
+                min_y = max(min_y - region["crop_padding"], 0)
+                max_y = min(max_y + region["crop_padding"], latents.shape[3])
+                #expand the to the nearest multiple of 8
+                width = max_x - min_x
+                width = width + (8 - width % 8)
+                max_x = max(min_x + width, latents.shape[2])
+                height = max_y - min_y
+                height = height + (8 - height % 8)
+                max_y = max(min_y + height, latents.shape[3])
+                crop_tuples.append((min_x, max_x, min_y, max_y))
+            else:
+                crop_tuples.append((0, latents.shape[2], 0, latents.shape[3]))
+        self.set_persistent_data(module_kwargs["module_id"], "crop_tuples", crop_tuples)
+
+        self.set_persistent_data(module_kwargs["module_id"], "initialized", True)
+    else:
+        masklist = self.check_persistent_data(module_kwargs["module_id"], "masklist")
+        crop_tuples = self.check_persistent_data(module_kwargs["module_id"], "crop_tuples")
+
+
+    for i, region in enumerate(region_info):
+        mask = masklist[i]
+        sub_module, sub_module_kwargs = resolve_module(region["sub_module"])
+        sub_latents = latents.clone() #clone to avoid modifying the original
+        sub_crop = crop_tuples[i]
+        sub_latents = sub_latents[:,:,sub_crop[0]:sub_crop[1],sub_crop[2]:sub_crop[3]]
+        sub_mask = mask[:,:,sub_crop[0]:sub_crop[1],sub_crop[2]:sub_crop[3]]
+
+        region_noise_pred, region_latents = sub_module(
+            self=self,
+            latents=sub_latents,
+            t=t,
+            module_kwargs=sub_module_kwargs,
+            control_data=None,
+            t2i_adapter_data=None,
+            **kwargs,
+        )
+        threshhold = 1 - (t.item() / self.scheduler.config.num_train_timesteps)
+        sub_mask_bool = sub_mask < threshhold
+
+        total_noise_pred[:,:,sub_crop[0]:sub_crop[1],sub_crop[2]:sub_crop[3]] += torch.where(sub_mask_bool, region_noise_pred * region["weight"], torch.zeros_like(region_noise_pred))
+        total_latents[:,:,sub_crop[0]:sub_crop[1],sub_crop[2]:sub_crop[3]] += torch.where(sub_mask_bool, region_latents * region["weight"], torch.zeros_like(region_latents))
+        total_weight[:,:,sub_crop[0]:sub_crop[1],sub_crop[2]:sub_crop[3]] += torch.where(sub_mask_bool, torch.ones_like(region_noise_pred) * region["weight"], torch.zeros_like(region_noise_pred))
+
+    total_noise_pred = total_noise_pred / total_weight
+    total_latents = total_latents / total_weight
+
+    return total_noise_pred, total_latents
+
+@invocation("regional_noise_pred_module",
+    title="Regional Noise Prediction Module",
+    tags=["module", "modular"],
+    category="modular",
+    version="1.0.0",
+)
+class RegionalNoisePredModuleInvocation(BaseInvocation):
+    """NP_MOD: Regional Noise Prediction"""
+    default_sub_module: Optional[ModuleData] = InputField(
+        default=None,
+        description="The custom module to use for the default noise prediction. No connection will use the default pipeline.",
+        title="[NP] Default SubModule",
+        input=Input.Connection,
+        ui_type=UIType.Any,
+    )
+    region_info: Union[list[RegionalNoisePredictionData], RegionalNoisePredictionData] = InputField(
+        default=[],
+        description="The custom modules to use for each region. No connection will use the default pipeline.",
+        title="[NP] Region Info",
+        input=Input.Connection,
+    )
+    default_weight: float = InputField(
+        title="Default Weight",
+        description="The weight to apply to the default noise prediction",
+        ge=0,
+        default=1.0,
+    )
+
+    def invoke(self, context: InvocationContext) -> NP_ModuleDataOutput:
+        if isinstance(self.region_info, RegionalNoisePredictionData):
+            self.region_info = [self.region_info]
+
+        module = NP_ModuleData(
+            name="Regional Noise Prediction module",
+            module="regional_noise_pred",
+            module_kwargs={
+                "default_sub_module": self.default_sub_module,
+                "region_info": self.region_info,
+                "default_weight": self.default_weight,
                 "module_id": self.id,
             },
         )
