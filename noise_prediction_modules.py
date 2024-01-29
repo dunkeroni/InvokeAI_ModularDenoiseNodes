@@ -1451,8 +1451,8 @@ def regional_noise_pred(
         latents=latents,
         t=t,
         module_kwargs=sub_module_kwargs,
-        control_data=None,
-        t2i_adapter_data=None,
+        control_data=control_data,
+        t2i_adapter_data=t2i_adapter_data,
         **kwargs,
     )
     total_noise_pred = default_noise_pred * default_weight
@@ -1529,8 +1529,8 @@ def regional_noise_pred(
             latents=sub_latents,
             t=t,
             module_kwargs=sub_module_kwargs,
-            control_data=None,
-            t2i_adapter_data=None,
+            control_data=None if region["crop"] else control_data,
+            t2i_adapter_data=None if region["crop"] else t2i_adapter_data,
             **kwargs,
         )
         threshhold = 1 - (t.item() / self.scheduler.config.num_train_timesteps)
