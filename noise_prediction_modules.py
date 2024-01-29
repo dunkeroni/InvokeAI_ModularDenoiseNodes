@@ -1210,11 +1210,11 @@ def override_conditioning(
             c = self.context.services.latents.get(positives).conditionings[0].to(device=latents.device, dtype=latents.dtype)
             extra_conditioning_info = c.extra_conditioning
         else:
-            c = conditioning_data.text_embeddings.conditionings[0].to(device=latents.device, dtype=latents.dtype)
+            c = conditioning_data.text_embeddings
             extra_conditioning_info = conditioning_data.extra
         
         if negatives is not None:
-            uc = self.context.services.latents.get(negatives)
+            uc = self.context.services.latents.get(negatives).conditionings[0].to(device=latents.device, dtype=latents.dtype)
         else:
             uc = conditioning_data.unconditioned_embeddings
         
