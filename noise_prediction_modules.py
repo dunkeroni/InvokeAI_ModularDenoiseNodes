@@ -957,6 +957,61 @@ class ParallelTransferModuleInvocation(BaseInvocation):
         )
 
 ####################################################################################################
+# Transfer Function: Sequential
+####################################################################################################
+"""takes in a list of submodules and choose one to run on each step"""
+@module_noise_pred("sequential_transfer")
+def sequential_transfer(
+    self: Modular_StableDiffusionGeneratorPipeline,
+    t: torch.Tensor,
+    step_index: int,
+    module_kwargs: dict | None,
+    latents: torch.Tensor, #to make distinct clones
+    **kwargs,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    sub_modules: list[ModuleData] = module_kwargs["sub_modules"]
+
+    sub_module, sub_module_kwargs = resolve_module(sub_modules[step_index % len(sub_modules)])
+    pred, orig_sub_latent = sub_module(
+        self=self,
+        latents=latents,
+        t=t,
+        step_index=step_index,
+        module_kwargs=sub_module_kwargs,
+        **kwargs,
+    )
+
+    return pred, orig_sub_latent
+
+@invocation("sequential_transfer_module",
+    title="Sequential Transfer",
+    tags=["module", "modular"],
+    category="modular",
+    version="1.0.0",
+)
+class SequentialTransferModuleInvocation(BaseInvocation):
+    """NP_MOD: Run multiple noise predictions in sequence."""
+    sub_modules: list[ModuleData] = InputField(
+        default=[],
+        description="The custom modules to use for each noise prediction. No connection will use the default pipeline.",
+        title="[NP] SubModules",
+        input=Input.Connection,
+    )
+
+    def invoke(self, context: InvocationContext) -> NP_ModuleDataOutput:
+        module = NP_ModuleData(
+            name="Sequential Transfer module",
+            module="sequential_transfer",
+            module_kwargs={
+                "sub_modules": self.sub_modules,
+            },
+        )
+
+        return NP_ModuleDataOutput(
+            module_data_output=module,
+        )
+
+####################################################################################################
 # Tiled Denoise Latents
 ####################################################################################################
 #Doesn't have it's own module function, relies on MultiDiffusion Sampling with jitter disabled.
