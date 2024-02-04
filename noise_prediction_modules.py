@@ -4,7 +4,10 @@ from .modular_denoise_latents import Modular_StableDiffusionGeneratorPipeline, M
 from invokeai.backend.stable_diffusion.diffusion.conditioning_data import ConditioningData
 from invokeai.backend.stable_diffusion.diffusers_pipeline import ControlNetData, T2IAdapterData
 from invokeai.backend.stable_diffusion.diffusion.shared_invokeai_diffusion import PostprocessingSettings
-from invokeai.app.invocations.primitives import LatentsField, ImageField
+from invokeai.app.invocations.primitives import (
+    LatentsField,
+    ImageField,
+)
 from invokeai.app.invocations.compel import ConditioningField
 from pydantic import BaseModel, Field
 import torch

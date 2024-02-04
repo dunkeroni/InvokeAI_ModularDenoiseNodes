@@ -10,6 +10,7 @@ from invokeai.app.invocations.baseinvocation import (
     OutputField,
     invocation,
     invocation_output,
+    UIType,
 )
 
 import math

@@ -1,5 +1,6 @@
 from .modular_decorators import module_pre_noise_guidance, get_pre_noise_guidance_module
 from .modular_denoise_latents import Modular_StableDiffusionGeneratorPipeline, ModuleData, PreG_ModuleDataOutput, PreG_ModuleData
+from invokeai.app.invocations.primitives import ColorField
 
 import torch
 from typing import Literal, Optional, Callable
@@ -49,12 +50,12 @@ def color_offset(
     **kwargs,
 ) -> torch.Tensor:
     sub_module, sub_module_kwargs = resolve_module(module_kwargs["sub_module"])
-    red = module_kwargs["red"]
-    green = module_kwargs["green"]
-    blue = module_kwargs["blue"]
-    brightness = module_kwargs["brightness"]
-    contrast = module_kwargs["contrast"]
-    saturation = module_kwargs["saturation"]
+    red = module_kwargs["red"] / total_step_count
+    green = module_kwargs["green"] / total_step_count
+    blue = module_kwargs["blue"] / total_step_count
+    brightness = module_kwargs["brightness"] / total_step_count
+    contrast = module_kwargs["contrast"] / total_step_count
+    saturation = pow(module_kwargs["saturation"], 1 / total_step_count)
     scaling = module_kwargs["scaling"]
 
     sub_latents = sub_module(
@@ -99,7 +100,7 @@ def color_offset(
     title="Color Offset SD1",
     tags=["modifier", "module", "modular"],
     category="modular",
-    version="1.0.0",
+    version="1.1.2",
 )
 class ColorOffsetModuleInvocation(BaseInvocation):
     """PreG_MOD: SD1 Color Offset"""
@@ -110,26 +111,10 @@ class ColorOffsetModuleInvocation(BaseInvocation):
         input=Input.Connection,
         ui_type=UIType.Any,
     )
-    red: float = InputField(
-        title="Red Offset",
-        description="[-4 - 4] The amount to shift the red channel",
-        ge=-4,
-        le=4,
-        default=0,
-    )
-    green: float = InputField(
-        title="Green Offset",
-        description="[-4 - 4] The amount to shift the green channel",
-        ge=-4,
-        le=4,
-        default=0,
-    )
-    blue: float = InputField(
-        title="Blue Offset",
-        description="[-4 - 4] The amount to shift the blue channel",
-        ge=-4,
-        le=4,
-        default=0,
+    color: ColorField = InputField(
+        title="Color",
+        description="The color to use for the offset",
+        default=ColorField(r=1, g=1, b=1, a=255),
     )
     brightness: float = InputField(
         title="Brightness Offset",
@@ -155,19 +140,24 @@ class ColorOffsetModuleInvocation(BaseInvocation):
     scaling: Literal["Linear", "Denoise", "None"] = InputField(
         title="Scaling",
         description="The scaling method to use",
-        default="Linear",
+        default="None",
         input=Input.Direct,
     )
 
     def invoke(self, context: InvocationContext) -> PreG_ModuleDataOutput:
+        #normalize colors from [0, 255] to [-4, 4], then scale by alpha
+        red = (self.color.r / 32 - 4) * (self.color.a / 255)
+        green = (self.color.g / 32 - 4) * (self.color.a / 255)
+        blue = (self.color.b / 32 - 4) * (self.color.a / 255)
+
         module = PreG_ModuleData(
             name="Color Offset module",
             module="color_offset",
             module_kwargs={
                 "sub_module": self.sub_module,
-                "red": self.red,
-                "green": self.green,
-                "blue": self.blue,
+                "red": red,
+                "green": green,
+                "blue": blue,
                 "brightness": self.brightness,
                 "contrast": self.contrast,
                 "saturation": self.saturation,
