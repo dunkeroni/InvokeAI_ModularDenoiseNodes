@@ -3,7 +3,7 @@ from .modular_denoise_latents import Modular_StableDiffusionGeneratorPipeline, M
 from invokeai.app.invocations.primitives import ColorField
 
 import torch
-from typing import Literal, Optional, Callable
+from typing import Literal, Optional, Callable, Union, List
 
 from invokeai.app.invocations.baseinvocation import (
     BaseInvocation,
@@ -326,6 +326,113 @@ class ColorGuidanceModuleInvocation(BaseInvocation):
                 "target_mean": self.target_mean,
                 "channels": channels,
             },
+        )
+
+        return PreG_ModuleDataOutput(
+            module_data_output=module,
+        )
+
+
+####################################################################################################
+# Color Gravitation
+# From: strange intuitions
+####################################################################################################
+"""Takes a list of colors. Before each step, 
+    each value in the latent is pulled towards the nearest colors.
+    The amount of pull is determined by the gravity and the vector distance to that color."""
+@module_pre_noise_guidance("color_gravitation")
+@torch.no_grad()
+def color_gravitation(
+    self: Modular_StableDiffusionGeneratorPipeline,
+    latents: torch.Tensor,
+    step_index: int,
+    total_step_count: int,
+    t: torch.Tensor,
+    module_kwargs: dict | None,
+    **kwargs,
+) -> torch.Tensor:
+    sub_module, sub_module_kwargs = resolve_module(module_kwargs["sub_module"])
+    colors: List[ColorField] = module_kwargs["colors"]
+    gravity = module_kwargs["gravity"]
+    model_type = module_kwargs["model_type"]
+    timestep: float = t.item()
+
+    sub_latents = sub_module(
+        self=self,
+        latents=latents,
+        t=t,
+        step_index=step_index,
+        total_step_count=total_step_count,
+        module_kwargs=sub_module_kwargs,
+        **kwargs,
+    )
+    colorvectors: List[torch.Tensor] = []
+
+    for color in colors:
+        if model_type == "SD 1.5":
+            colortensor = latents.clone() # 1x4x64x64
+            colortensor[:, 2, :, :] = -1 * (color.r / 32 - 4) # red
+            colortensor[:, 1, :, :] = color.g / 32 - 4 # green
+            colortensor[:, 3, :, :] = -1 * (color.b / 32 - 4) # blue
+
+            colorvector = colortensor - latents
+            magnitude = torch.norm(colorvector[:, 1:, :, :], dim=1, keepdim=True)
+            scaled_colorvector = gravity * (colorvector / (magnitude ** 2)) * color.a / 255
+            colorvectors.append(scaled_colorvector)       
+        elif model_type == "SDXL":
+            raise NotImplementedError("SDXL color gravitation not yet implemented")
+
+    if model_type == "SD 1.5":
+        colorvector = torch.sum(torch.stack(colorvectors), dim=0)
+        sub_latents += colorvector * (1 - step_index / total_step_count)
+
+    return sub_latents
+
+
+@invocation("color_gravitation_module",
+    title="Color Gravitation",
+    tags=["modifier", "module", "modular", "color"],
+    category="modular",
+    version="1.0.0",
+)
+class ColorGravitationModuleInvocation(BaseInvocation):
+    """PreG_MOD: Color Gravitation"""
+    sub_module: Optional[ModuleData] = InputField(
+        default=None,
+        description="The custom module to use for each noise prediction tile. No connection will use the default pipeline.",
+        title="[PreG] SubModules",
+        input=Input.Connection,
+        ui_type=UIType.Any,
+    )
+    colors: Union[ColorField, List[ColorField]] = InputField(
+        title="Colors",
+        description="The colors to use as targets",
+        default=[ColorField(r=0, g=0, b=0, a=255)],
+    )
+    gravity: float = InputField(
+        title="Gravity",
+        description="The gravity to apply to the chroma",
+        default=0.5,
+    )
+    model_type: Literal["SD 1.5", "SDXL"] = InputField(
+        title="Model Type",
+        description="The type of model to use",
+        default="SD 1.5",
+        input=Input.Direct,
+    )
+    def invoke(self, context: InvocationContext) -> PreG_ModuleDataOutput:
+        if isinstance(self.colors, ColorField):
+            self.colors = [self.colors]
+
+        module = PreG_ModuleData(
+            name="Chroma Gravitation module",
+            module="color_gravitation",
+            module_kwargs={
+                "sub_module": self.sub_module,
+                "colors": self.colors,
+                "gravity": self.gravity,
+                "model_type": self.model_type,
+            }
         )
 
         return PreG_ModuleDataOutput(
