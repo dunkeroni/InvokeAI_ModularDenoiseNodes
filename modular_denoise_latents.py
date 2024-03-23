@@ -1,7 +1,7 @@
 from invokeai.app.invocations.latent import DenoiseLatentsInvocation
 from invokeai.backend.stable_diffusion.diffusers_pipeline import StableDiffusionGeneratorPipeline
 
-from invokeai.app.invocations.baseinvocation import (
+from invokeai.invocation_api import (
     BaseInvocationOutput,
     BaseInvocation,
     Input,
@@ -10,7 +10,6 @@ from invokeai.app.invocations.baseinvocation import (
     OutputField,
     invocation,
     invocation_output,
-    UIType,
 )
 
 import math
@@ -28,8 +27,6 @@ from invokeai.backend.stable_diffusion.diffusers_pipeline import (
 from pydantic import BaseModel, Field
 
 from .modular_decorators import get_noise_prediction_module, get_post_noise_guidance_module, get_pre_noise_guidance_module
-
-import numpy as np
 
 import inspect #TODO: get rid of this garbage
 

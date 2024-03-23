@@ -1,17 +1,17 @@
 from .modular_decorators import module_pre_noise_guidance, get_pre_noise_guidance_module
 from .modular_denoise_latents import Modular_StableDiffusionGeneratorPipeline, ModuleData, PreG_ModuleDataOutput, PreG_ModuleData
-from invokeai.app.invocations.primitives import ColorField
 
 import torch
 from typing import Literal, Optional, Callable, Union, List
 
-from invokeai.app.invocations.baseinvocation import (
+from invokeai.invocation_api import (
     BaseInvocation,
     Input,
     InputField,
     InvocationContext,
     UIType,
     invocation,
+    ColorField,
 )
 
 def resolve_module(module_dict: dict | None) -> tuple[Callable, dict]:

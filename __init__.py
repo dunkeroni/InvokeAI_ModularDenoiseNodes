@@ -15,6 +15,6 @@ from .pre_noise_guidance_modules import (
     ColorGuidanceModuleInvocation,
 )
 from .post_noise_guidance_modules import (
-    GradientMaskModuleInvocation,
+    default_case,
 )
 from .analyse_latents import AnalyzeLatentsInvocation

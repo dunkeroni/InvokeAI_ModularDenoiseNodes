@@ -1,14 +1,9 @@
 from .modular_decorators import module_noise_pred, get_noise_prediction_module
 from .modular_denoise_latents import Modular_StableDiffusionGeneratorPipeline, ModuleData, NP_ModuleDataOutput, NP_ModuleData
 
-from invokeai.backend.stable_diffusion.diffusion.conditioning_data import ConditioningData
 from invokeai.backend.stable_diffusion.diffusers_pipeline import ControlNetData, T2IAdapterData
-from invokeai.backend.stable_diffusion.diffusion.shared_invokeai_diffusion import PostprocessingSettings
-from invokeai.app.invocations.primitives import (
-    LatentsField,
-    ImageField,
-)
-from invokeai.app.invocations.compel import ConditioningField
+#from invokeai.backend.stable_diffusion.diffusion.shared_invokeai_diffusion import PostprocessingSettings
+from invokeai.backend.stable_diffusion.diffusion.conditioning_data import ConditioningData
 from pydantic import BaseModel, Field
 import torch
 from typing import Literal, Optional, Callable, List, Union
@@ -17,7 +12,7 @@ import random
 import numpy as np
 import torch.nn.functional as F
 
-from invokeai.app.invocations.baseinvocation import (
+from invokeai.invocation_api import (
     BaseInvocation,
     BaseInvocationOutput,
     Input,
@@ -27,6 +22,10 @@ from invokeai.app.invocations.baseinvocation import (
     UIType,
     invocation,
     invocation_output,
+    LatentsField,
+    ImageField,
+    ConditioningField,
+    ConditioningFieldData,
 )
 
 
@@ -154,22 +153,15 @@ def perp_neg_do_unet_step(
         if unconditional_conditioning_data is None:
             # format conditioning data
             unconditional_name: str = module_kwargs["unconditional_name"]
-            unconditional_data = self.context.services.latents.get(unconditional_name)
+            unconditional_data = self.context.conditioning.load(unconditional_name)
             c = unconditional_data.conditionings[0].to(device=latents.device, dtype=latents.dtype)
-            extra_conditioning_info = c.extra_conditioning
-
+            #extra_conditioning_info = c.extra_conditioning
             unconditional_conditioning_data = ConditioningData(
                 unconditioned_embeddings=c,
                 text_embeddings=conditioning_data.text_embeddings,
                 guidance_scale=conditioning_data.guidance_scale,
                 guidance_rescale_multiplier=conditioning_data.guidance_rescale_multiplier,
-                extra=extra_conditioning_info,
-                postprocessing_settings=PostprocessingSettings(
-                    threshold=0.0,  # threshold,
-                    warmup=0.2,  # warmup,
-                    h_symmetry_time_pct=None,  # h_symmetry_time_pct,
-                    v_symmetry_time_pct=None,  # v_symmetry_time_pct,
-                ),
+                #extra=extra_conditioning_info,
             )
             self.set_persistent_data(module_id, "unconditional_conditioning_data", unconditional_conditioning_data)
 
@@ -1088,10 +1080,10 @@ def skip_residual(
     persistent_latent = self.check_persistent_data(module_id, "latent") #the latent from the original input on the module
     persistent_noise = self.check_persistent_data(module_id, "noise") #the noise from the original input on the module
     if persistent_latent is None: #load on first call
-        persistent_latent = self.context.services.latents.get(latents_input["latents_name"]).to(latents.device)
+        persistent_latent = self.context.tensors.load(latents_input["latents_name"]).to(latents.device)
         self.set_persistent_data(module_id, "latent", persistent_latent)
     if persistent_noise is None: #load on first call
-        persistent_noise = self.context.services.latents.get(noise_input["latents_name"]).to(latents.device)
+        persistent_noise = self.context.tensors.load(noise_input["latents_name"]).to(latents.device)
         self.set_persistent_data(module_id, "noise", persistent_noise)
 
     noised_latents = torch.lerp(persistent_latent, persistent_noise, ((t) / self.scheduler.config.num_train_timesteps).item())
@@ -1265,14 +1257,14 @@ def override_conditioning(
         positives: str = module_kwargs["positive_conditioning_data"]
         negatives: str = module_kwargs["negative_conditioning_data"]
         if positives is not None:
-            c = self.context.services.latents.get(positives).conditionings[0].to(device=latents.device, dtype=latents.dtype)
+            c = self.context.conditioning.load(positives).conditionings[0].to(device=latents.device, dtype=latents.dtype)
             extra_conditioning_info = c.extra_conditioning
         else:
             c = conditioning_data.text_embeddings
             extra_conditioning_info = conditioning_data.extra
         
         if negatives is not None:
-            uc = self.context.services.latents.get(negatives).conditionings[0].to(device=latents.device, dtype=latents.dtype)
+            uc = self.context.conditioning.load(negatives).conditionings[0].to(device=latents.device, dtype=latents.dtype)
         else:
             uc = conditioning_data.unconditioned_embeddings
         
@@ -1282,12 +1274,6 @@ def override_conditioning(
             guidance_scale=new_cfg,
             guidance_rescale_multiplier=cfg_rescale,
             extra=extra_conditioning_info,
-            postprocessing_settings=PostprocessingSettings(
-                threshold=0.0,  # threshold,
-                warmup=0.2,  # warmup,
-                h_symmetry_time_pct=None,  # h_symmetry_time_pct,
-                v_symmetry_time_pct=None,  # v_symmetry_time_pct,
-            ),
         )
         self.set_persistent_data(module_kwargs["module_id"], "conditioning_data", new_conditioning_data)
     
@@ -1468,7 +1454,7 @@ def regional_noise_pred(
         masklist = []
         crop_tuples = []
         for region in region_info:
-            mask = self.context.services.images.get_pil_image(region["region_mask_image"])
+            mask = self.context.images.get_pil(region["region_mask_image"])
             if region["blur"] > 0:
                 blur = ImageFilter.BoxBlur(region["blur"])
                 mask = mask.filter(blur)

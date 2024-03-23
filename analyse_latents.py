@@ -1,16 +1,16 @@
-from invokeai.app.invocations.baseinvocation import (
+from invokeai.invocation_api import (
     BaseInvocation,
     Input,
     InputField,
     InvocationContext,
     invocation,
+    LatentsField,
+    ImageField,
+    ImageOutput,
 )
-
-from invokeai.app.invocations.primitives import LatentsField, ImageField, ImageOutput
 
 import matplotlib.pyplot as plt
 from PIL import Image
-from invokeai.app.services.image_records.image_records_common import ImageCategory,  ResourceOrigin
 import numpy as np
 
 @invocation("analyze_latents", title="Analyze Latents", tags=["analyze", "latents"], category="modular", version="1.0.0")
@@ -43,7 +43,7 @@ class AnalyzeLatentsInvocation(BaseInvocation):
         title="Image Title",
     )
     def invoke(self, context: InvocationContext) -> ImageOutput:
-        latents = context.services.latents.get(self.latents.latents_name)
+        latents = context.tensors.load(self.latents.latents_name)
         latents = latents.detach().cpu().numpy()
         #split individual channels
         L0 = latents[0,0,:,:]
@@ -81,14 +81,7 @@ class AnalyzeLatentsInvocation(BaseInvocation):
         img = Image.fromarray(buf)
 
         #return image
-        image_dto = context.services.images.create(
-            image=img,
-            image_origin=ResourceOrigin.INTERNAL,
-            image_category=ImageCategory.GENERAL,
-            node_id=self.id,
-            session_id=context.graph_execution_state_id,
-            is_intermediate=self.is_intermediate,
-        )
+        image_dto = context.images.save(image=img)
 
         return ImageOutput(
             image=ImageField(image_name=image_dto.image_name),
