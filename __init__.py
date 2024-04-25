@@ -7,8 +7,8 @@ from .noise_prediction_modules import (
     CosineDecayTransferModuleInvocation,
     LinearTransferModuleInvocation,
     SkipResidualModuleInvocation,
-    PerpNegStepModuleInvocation,
-    FooocusSharpnessModuleInvocation,
+    #PerpNegStepModuleInvocation,
+    #FooocusSharpnessModuleInvocation,
 ) 
 from .pre_noise_guidance_modules import (
     ColorOffsetModuleInvocation,

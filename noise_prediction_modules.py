@@ -2,8 +2,9 @@ from .modular_decorators import module_noise_pred, get_noise_prediction_module
 from .modular_denoise_latents import Modular_StableDiffusionGeneratorPipeline, ModuleData, NP_ModuleDataOutput, NP_ModuleData
 
 from invokeai.backend.stable_diffusion.diffusers_pipeline import ControlNetData, T2IAdapterData
+from invokeai.backend.stable_diffusion.diffusion.conditioning_data import IPAdapterData, TextConditioningData
 #from invokeai.backend.stable_diffusion.diffusion.shared_invokeai_diffusion import PostprocessingSettings
-from invokeai.backend.stable_diffusion.diffusion.conditioning_data import ConditioningData
+#from invokeai.backend.stable_diffusion.diffusion.conditioning_data import ConditioningData
 from pydantic import BaseModel, Field
 import torch
 from typing import Literal, Optional, Callable, List, Union
@@ -48,10 +49,11 @@ def standard_do_unet_step(
     self: Modular_StableDiffusionGeneratorPipeline,
     latents: torch.Tensor, #result of previous step
     t: torch.Tensor,
-    conditioning_data: ConditioningData,
+    conditioning_data: TextConditioningData,
     step_index: int,
     total_step_count: int,
     control_data: List[ControlNetData] = None,
+    ip_adapter_data: Optional[list[IPAdapterData]] = None,
     t2i_adapter_data: list[T2IAdapterData] = None,
     **kwargs,
 ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -83,6 +85,7 @@ def standard_do_unet_step(
             conditioning_data=conditioning_data,
             step_index=step_index,
             total_step_count=total_step_count,
+            ip_adapter_data=ip_adapter_data,
             down_block_additional_residuals=down_block_additional_residuals,  # for ControlNet
             mid_block_additional_residual=mid_block_additional_residual,  # for ControlNet
             down_intrablock_additional_residuals=down_intrablock_additional_residuals,  # for T2I-Adapter
@@ -123,138 +126,138 @@ class StandardStepModuleInvocation(BaseInvocation):
         )
 
 
-####################################################################################################
-# Perp Negative
-# From: https://perp-neg.github.io/
-####################################################################################################
-def get_perpendicular_component(x: torch.Tensor, y: torch.Tensor):
-    assert x.shape == y.shape
-    return x - ((torch.mul(x, y).sum())/(torch.norm(y)**2)) * y
+# ####################################################################################################
+# # Perp Negative
+# # From: https://perp-neg.github.io/
+# ####################################################################################################
+# def get_perpendicular_component(x: torch.Tensor, y: torch.Tensor):
+#     assert x.shape == y.shape
+#     return x - ((torch.mul(x, y).sum())/(torch.norm(y)**2)) * y
 
-@module_noise_pred("perp_neg_unet_step")
-def perp_neg_do_unet_step(
-    self: Modular_StableDiffusionGeneratorPipeline,
-    latents: torch.Tensor, #result of previous step
-    t: torch.Tensor,
-    conditioning_data: ConditioningData,
-    step_index: int,
-    total_step_count: int,
-    module_kwargs: dict | None,
-    control_data: List[ControlNetData] = None,
-    t2i_adapter_data: list[T2IAdapterData] = None,
-    **kwargs,
-) -> tuple[torch.Tensor, torch.Tensor]:
-        timestep = t[0]
-        latent_model_input = self.scheduler.scale_model_input(latents, timestep)
-        module_id = module_kwargs["module_id"]
+# @module_noise_pred("perp_neg_unet_step")
+# def perp_neg_do_unet_step(
+#     self: Modular_StableDiffusionGeneratorPipeline,
+#     latents: torch.Tensor, #result of previous step
+#     t: torch.Tensor,
+#     conditioning_data: ConditioningData,
+#     step_index: int,
+#     total_step_count: int,
+#     module_kwargs: dict | None,
+#     control_data: List[ControlNetData] = None,
+#     t2i_adapter_data: list[T2IAdapterData] = None,
+#     **kwargs,
+# ) -> tuple[torch.Tensor, torch.Tensor]:
+#         timestep = t[0]
+#         latent_model_input = self.scheduler.scale_model_input(latents, timestep)
+#         module_id = module_kwargs["module_id"]
 
-        # check for saved unconditional
-        unconditional_conditioning_data = self.check_persistent_data(module_id, "unconditional_conditioning_data")
-        if unconditional_conditioning_data is None:
-            # format conditioning data
-            unconditional_name: str = module_kwargs["unconditional_name"]
-            unconditional_data = self.context.conditioning.load(unconditional_name)
-            c = unconditional_data.conditionings[0].to(device=latents.device, dtype=latents.dtype)
-            #extra_conditioning_info = c.extra_conditioning
-            unconditional_conditioning_data = ConditioningData(
-                unconditioned_embeddings=c,
-                text_embeddings=conditioning_data.text_embeddings,
-                guidance_scale=conditioning_data.guidance_scale,
-                guidance_rescale_multiplier=conditioning_data.guidance_rescale_multiplier,
-                #extra=extra_conditioning_info,
-            )
-            self.set_persistent_data(module_id, "unconditional_conditioning_data", unconditional_conditioning_data)
+#         # check for saved unconditional
+#         unconditional_conditioning_data = self.check_persistent_data(module_id, "unconditional_conditioning_data")
+#         if unconditional_conditioning_data is None:
+#             # format conditioning data
+#             unconditional_name: str = module_kwargs["unconditional_name"]
+#             unconditional_data = self.context.conditioning.load(unconditional_name)
+#             c = unconditional_data.conditionings[0].to(device=latents.device, dtype=latents.dtype)
+#             #extra_conditioning_info = c.extra_conditioning
+#             unconditional_conditioning_data = ConditioningData(
+#                 unconditioned_embeddings=c,
+#                 text_embeddings=conditioning_data.text_embeddings,
+#                 guidance_scale=conditioning_data.guidance_scale,
+#                 guidance_rescale_multiplier=conditioning_data.guidance_rescale_multiplier,
+#                 #extra=extra_conditioning_info,
+#             )
+#             self.set_persistent_data(module_id, "unconditional_conditioning_data", unconditional_conditioning_data)
 
         
-        # Handle ControlNet(s)
-        down_block_additional_residuals = None
-        mid_block_additional_residual = None
-        down_intrablock_additional_residuals = None
-        if control_data is not None:
-            down_block_additional_residuals, mid_block_additional_residual = self.invokeai_diffuser.do_controlnet_step(
-                control_data=control_data,
-                sample=latent_model_input,
-                timestep=timestep,
-                step_index=step_index,
-                total_step_count=total_step_count,
-                conditioning_data=conditioning_data,
-            )
+#         # Handle ControlNet(s)
+#         down_block_additional_residuals = None
+#         mid_block_additional_residual = None
+#         down_intrablock_additional_residuals = None
+#         if control_data is not None:
+#             down_block_additional_residuals, mid_block_additional_residual = self.invokeai_diffuser.do_controlnet_step(
+#                 control_data=control_data,
+#                 sample=latent_model_input,
+#                 timestep=timestep,
+#                 step_index=step_index,
+#                 total_step_count=total_step_count,
+#                 conditioning_data=conditioning_data,
+#             )
         
-        # and T2I-Adapter(s)
-        down_intrablock_additional_residuals = self.get_t2i_intrablock(t2i_adapter_data, step_index, total_step_count)
+#         # and T2I-Adapter(s)
+#         down_intrablock_additional_residuals = self.get_t2i_intrablock(t2i_adapter_data, step_index, total_step_count)
 
-        # result from calling object's default pipeline
-        # extra kwargs get dropped here, so pass whatever you like down the chain
-        negative_noise_pred, positive_noise_pred = self.invokeai_diffuser.do_unet_step(
-            sample=latent_model_input,
-            timestep=t,
-            conditioning_data=conditioning_data,
-            step_index=step_index,
-            total_step_count=total_step_count,
-            down_block_additional_residuals=down_block_additional_residuals,  # for ControlNet
-            mid_block_additional_residual=mid_block_additional_residual,  # for ControlNet
-            down_intrablock_additional_residuals=down_intrablock_additional_residuals,  # for T2I-Adapter
-        )
+#         # result from calling object's default pipeline
+#         # extra kwargs get dropped here, so pass whatever you like down the chain
+#         negative_noise_pred, positive_noise_pred = self.invokeai_diffuser.do_unet_step(
+#             sample=latent_model_input,
+#             timestep=t,
+#             conditioning_data=conditioning_data,
+#             step_index=step_index,
+#             total_step_count=total_step_count,
+#             down_block_additional_residuals=down_block_additional_residuals,  # for ControlNet
+#             mid_block_additional_residual=mid_block_additional_residual,  # for ControlNet
+#             down_intrablock_additional_residuals=down_intrablock_additional_residuals,  # for T2I-Adapter
+#         )
 
-        # result from calling object's default pipeline with module's unconditional conditioning
-        # NOTE: it is possible to get noise prediction from just the unconditional, and only take 50% longer instead of 100%
-        # BUT: that's burried a few layers deeper than I want to customize right now.
-        unconditional_noise_pred, _ = self.invokeai_diffuser.do_unet_step(
-            sample=latent_model_input,
-            timestep=t,
-            conditioning_data=unconditional_conditioning_data,
-            step_index=step_index,
-            total_step_count=total_step_count,
-            down_block_additional_residuals=down_block_additional_residuals,  # for ControlNet
-            mid_block_additional_residual=mid_block_additional_residual,  # for ControlNet
-            down_intrablock_additional_residuals=down_intrablock_additional_residuals,  # for T2I-Adapter
-        )
+#         # result from calling object's default pipeline with module's unconditional conditioning
+#         # NOTE: it is possible to get noise prediction from just the unconditional, and only take 50% longer instead of 100%
+#         # BUT: that's burried a few layers deeper than I want to customize right now.
+#         unconditional_noise_pred, _ = self.invokeai_diffuser.do_unet_step(
+#             sample=latent_model_input,
+#             timestep=t,
+#             conditioning_data=unconditional_conditioning_data,
+#             step_index=step_index,
+#             total_step_count=total_step_count,
+#             down_block_additional_residuals=down_block_additional_residuals,  # for ControlNet
+#             mid_block_additional_residual=mid_block_additional_residual,  # for ControlNet
+#             down_intrablock_additional_residuals=down_intrablock_additional_residuals,  # for T2I-Adapter
+#         )
 
-        main = positive_noise_pred - unconditional_noise_pred
-        e_i = negative_noise_pred - unconditional_noise_pred
-        perp = -1 * get_perpendicular_component(e_i, main)
+#         main = positive_noise_pred - unconditional_noise_pred
+#         e_i = negative_noise_pred - unconditional_noise_pred
+#         perp = -1 * get_perpendicular_component(e_i, main)
 
-        guidance_scale = conditioning_data.guidance_scale
-        if isinstance(guidance_scale, list):
-            guidance_scale = guidance_scale[step_index]
+#         guidance_scale = conditioning_data.guidance_scale
+#         if isinstance(guidance_scale, list):
+#             guidance_scale = guidance_scale[step_index]
 
-        #noise_pred = self.invokeai_diffuser._combine(uc_noise_pred, perp_noise_pred, guidance_scale)
-        noise_pred = unconditional_noise_pred + guidance_scale * (main + perp)
-        guidance_rescale_multiplier = conditioning_data.guidance_rescale_multiplier
-        if guidance_rescale_multiplier > 0:
-            noise_pred = self._rescale_cfg(
-                noise_pred,
-                positive_noise_pred,
-                guidance_rescale_multiplier,
-            )
+#         #noise_pred = self.invokeai_diffuser._combine(uc_noise_pred, perp_noise_pred, guidance_scale)
+#         noise_pred = unconditional_noise_pred + guidance_scale * (main + perp)
+#         guidance_rescale_multiplier = conditioning_data.guidance_rescale_multiplier
+#         if guidance_rescale_multiplier > 0:
+#             noise_pred = self._rescale_cfg(
+#                 noise_pred,
+#                 positive_noise_pred,
+#                 guidance_rescale_multiplier,
+#             )
 
-        return noise_pred, latents
+#         return noise_pred, latents
 
-@invocation("perp_neg_unet_step_module",
-    title="Perp Negative",
-    tags=["module", "modular"],
-    category="modular",
-    version="1.0.0",
-)
-class PerpNegStepModuleInvocation(BaseInvocation):
-    """NP_MOD: Perp Negative noise prediction."""
-    unconditional: ConditioningField = InputField(
-        description="EMPTY CONDITIONING GOES HERE",
-        input=Input.Connection, 
-    )
-    def invoke(self, context: InvocationContext) -> NP_ModuleDataOutput:
-        module = NP_ModuleData(
-            name="Perp Negative",
-            module="perp_neg_unet_step",
-            module_kwargs={
-                "unconditional_name": self.unconditional.conditioning_name,
-                "module_id": self.id,
-            },
-        )
+# @invocation("perp_neg_unet_step_module",
+#     title="Perp Negative",
+#     tags=["module", "modular"],
+#     category="modular",
+#     version="1.0.0",
+# )
+# class PerpNegStepModuleInvocation(BaseInvocation):
+#     """NP_MOD: Perp Negative noise prediction."""
+#     unconditional: ConditioningField = InputField(
+#         description="EMPTY CONDITIONING GOES HERE",
+#         input=Input.Connection, 
+#     )
+#     def invoke(self, context: InvocationContext) -> NP_ModuleDataOutput:
+#         module = NP_ModuleData(
+#             name="Perp Negative",
+#             module="perp_neg_unet_step",
+#             module_kwargs={
+#                 "unconditional_name": self.unconditional.conditioning_name,
+#                 "module_id": self.id,
+#             },
+#         )
 
-        return NP_ModuleDataOutput(
-            module_data_output=module,
-        )
+#         return NP_ModuleDataOutput(
+#             module_data_output=module,
+#         )
 
 
 ####################################################################################################
@@ -1124,459 +1127,223 @@ class SkipResidualModuleInvocation(BaseInvocation):
             module_data_output=module,
         )
 
-####################################################################################################
-# Sharpness
-# From: https://github.com/lllyasviel/Fooocus/blob/176faf6f347b90866afe676fc9fb2c2d74587d7b/modules/patch.py
-# GNU General Public License v3.0 https://github.com/lllyasviel/Fooocus/blob/176faf6f347b90866afe676fc9fb2c2d74587d7b/LICENSE
-####################################################################################################
-"""
-Increase the sharpness of the image by applying a filter to the noise prediction and compute guidance influenced by the result.
-"""
-from .anisotropic import adaptive_anisotropic_filter
-@module_noise_pred("fooocus_sharpness_module")
-def fooocus_sharpness_unet_step(
-    self: Modular_StableDiffusionGeneratorPipeline,
-    latents: torch.Tensor, #result of previous step
-    t: torch.Tensor,
-    conditioning_data: ConditioningData,
-    step_index: int,
-    total_step_count: int,
-    module_kwargs: dict | None,
-    control_data: List[ControlNetData] = None,
-    t2i_adapter_data: list[T2IAdapterData] = None,
-    **kwargs,
-) -> tuple[torch.Tensor, torch.Tensor]:
-        timestep = t[0]
-        latent_model_input = self.scheduler.scale_model_input(latents, timestep)
-        sharpness = module_kwargs["sharpness"]
+# ####################################################################################################
+# # Sharpness
+# # From: https://github.com/lllyasviel/Fooocus/blob/176faf6f347b90866afe676fc9fb2c2d74587d7b/modules/patch.py
+# # GNU General Public License v3.0 https://github.com/lllyasviel/Fooocus/blob/176faf6f347b90866afe676fc9fb2c2d74587d7b/LICENSE
+# ####################################################################################################
+# """
+# Increase the sharpness of the image by applying a filter to the noise prediction and compute guidance influenced by the result.
+# """
+# from .anisotropic import adaptive_anisotropic_filter
+# @module_noise_pred("fooocus_sharpness_module")
+# def fooocus_sharpness_unet_step(
+#     self: Modular_StableDiffusionGeneratorPipeline,
+#     latents: torch.Tensor, #result of previous step
+#     t: torch.Tensor,
+#     conditioning_data: ConditioningData,
+#     step_index: int,
+#     total_step_count: int,
+#     module_kwargs: dict | None,
+#     control_data: List[ControlNetData] = None,
+#     t2i_adapter_data: list[T2IAdapterData] = None,
+#     **kwargs,
+# ) -> tuple[torch.Tensor, torch.Tensor]:
+#         timestep = t[0]
+#         latent_model_input = self.scheduler.scale_model_input(latents, timestep)
+#         sharpness = module_kwargs["sharpness"]
         
-        # Handle ControlNet(s)
-        down_block_additional_residuals = None
-        mid_block_additional_residual = None
-        down_intrablock_additional_residuals = None
-        if control_data is not None:
-            down_block_additional_residuals, mid_block_additional_residual = self.invokeai_diffuser.do_controlnet_step(
-                control_data=control_data,
-                sample=latent_model_input,
-                timestep=timestep,
-                step_index=step_index,
-                total_step_count=total_step_count,
-                conditioning_data=conditioning_data,
-            )
+#         # Handle ControlNet(s)
+#         down_block_additional_residuals = None
+#         mid_block_additional_residual = None
+#         down_intrablock_additional_residuals = None
+#         if control_data is not None:
+#             down_block_additional_residuals, mid_block_additional_residual = self.invokeai_diffuser.do_controlnet_step(
+#                 control_data=control_data,
+#                 sample=latent_model_input,
+#                 timestep=timestep,
+#                 step_index=step_index,
+#                 total_step_count=total_step_count,
+#                 conditioning_data=conditioning_data,
+#             )
         
-        # and T2I-Adapter(s)
-        down_intrablock_additional_residuals = self.get_t2i_intrablock(t2i_adapter_data, step_index, total_step_count)
+#         # and T2I-Adapter(s)
+#         down_intrablock_additional_residuals = self.get_t2i_intrablock(t2i_adapter_data, step_index, total_step_count)
 
-        # result from calling object's default pipeline
-        # extra kwargs get dropped here, so pass whatever you like down the chain
-        uc_noise_pred, c_noise_pred = self.invokeai_diffuser.do_unet_step(
-            sample=latent_model_input,
-            timestep=t,
-            conditioning_data=conditioning_data,
-            step_index=step_index,
-            total_step_count=total_step_count,
-            down_block_additional_residuals=down_block_additional_residuals,  # for ControlNet
-            mid_block_additional_residual=mid_block_additional_residual,  # for ControlNet
-            down_intrablock_additional_residuals=down_intrablock_additional_residuals,  # for T2I-Adapter
-        )
+#         # result from calling object's default pipeline
+#         # extra kwargs get dropped here, so pass whatever you like down the chain
+#         uc_noise_pred, c_noise_pred = self.invokeai_diffuser.do_unet_step(
+#             sample=latent_model_input,
+#             timestep=t,
+#             conditioning_data=conditioning_data,
+#             step_index=step_index,
+#             total_step_count=total_step_count,
+#             down_block_additional_residuals=down_block_additional_residuals,  # for ControlNet
+#             mid_block_additional_residual=mid_block_additional_residual,  # for ControlNet
+#             down_intrablock_additional_residuals=down_intrablock_additional_residuals,  # for T2I-Adapter
+#         )
 
-        guidance_scale = conditioning_data.guidance_scale
-        if isinstance(guidance_scale, list):
-            guidance_scale = guidance_scale[step_index]
+#         guidance_scale = conditioning_data.guidance_scale
+#         if isinstance(guidance_scale, list):
+#             guidance_scale = guidance_scale[step_index]
 
-        # The following code is adapted from lllyasveil's Fooocus project, linked above
-        # It has been modified by @dunkeroni to work with the invokeai_diffuser pipeline components
-        positive_eps = latent_model_input - c_noise_pred
-        negative_eps = latent_model_input - uc_noise_pred
+#         # The following code is adapted from lllyasveil's Fooocus project, linked above
+#         # It has been modified by @dunkeroni to work with the invokeai_diffuser pipeline components
+#         positive_eps = latent_model_input - c_noise_pred
+#         negative_eps = latent_model_input - uc_noise_pred
 
-        alpha = 0.001 * sharpness * (1 - timestep.item()/999.0)
-        positive_eps_degraded = adaptive_anisotropic_filter(x=positive_eps, g=c_noise_pred)
-        positive_eps_degraded_weighted = torch.lerp(positive_eps, positive_eps_degraded, alpha)
+#         alpha = 0.001 * sharpness * (1 - timestep.item()/999.0)
+#         positive_eps_degraded = adaptive_anisotropic_filter(x=positive_eps, g=c_noise_pred)
+#         positive_eps_degraded_weighted = torch.lerp(positive_eps, positive_eps_degraded, alpha)
 
-        noise_pred = latent_model_input - self.invokeai_diffuser._combine(negative_eps, positive_eps_degraded_weighted, guidance_scale)
-        # End of adapted code
+#         noise_pred = latent_model_input - self.invokeai_diffuser._combine(negative_eps, positive_eps_degraded_weighted, guidance_scale)
+#         # End of adapted code
 
-        guidance_rescale_multiplier = conditioning_data.guidance_rescale_multiplier
-        if guidance_rescale_multiplier > 0:
-            noise_pred = self._rescale_cfg(
-                noise_pred,
-                c_noise_pred,
-                guidance_rescale_multiplier,
-            )
+#         guidance_rescale_multiplier = conditioning_data.guidance_rescale_multiplier
+#         if guidance_rescale_multiplier > 0:
+#             noise_pred = self._rescale_cfg(
+#                 noise_pred,
+#                 c_noise_pred,
+#                 guidance_rescale_multiplier,
+#             )
 
-        return noise_pred, latents
+#         return noise_pred, latents
 
-@invocation("fooocus_sharpness_module",
-    title="Sharpness Module",
-    tags=["module", "modular"],
-    category="modular",
-    version="1.0.0",
-)
-class FooocusSharpnessModuleInvocation(BaseInvocation):
-    """NP_MOD: Sharpness"""
-    sharpness: float = InputField(
-        title="Sharpness",
-        description="The sharpness to apply to the noise prediction. Recommended Range: 2~30",
-        gt=0,
-        default=2,
-    )
+# @invocation("fooocus_sharpness_module",
+#     title="Sharpness Module",
+#     tags=["module", "modular"],
+#     category="modular",
+#     version="1.0.0",
+# )
+# class FooocusSharpnessModuleInvocation(BaseInvocation):
+#     """NP_MOD: Sharpness"""
+#     sharpness: float = InputField(
+#         title="Sharpness",
+#         description="The sharpness to apply to the noise prediction. Recommended Range: 2~30",
+#         gt=0,
+#         default=2,
+#     )
 
-    def invoke(self, context: InvocationContext) -> NP_ModuleDataOutput:
-        module = NP_ModuleData(
-            name="Sharpness module",
-            module="fooocus_sharpness_module",
-            module_kwargs={
-                "sharpness": self.sharpness,
-            },
-        )
+#     def invoke(self, context: InvocationContext) -> NP_ModuleDataOutput:
+#         module = NP_ModuleData(
+#             name="Sharpness module",
+#             module="fooocus_sharpness_module",
+#             module_kwargs={
+#                 "sharpness": self.sharpness,
+#             },
+#         )
 
-        return NP_ModuleDataOutput(
-            module_data_output=module,
-        )
+#         return NP_ModuleDataOutput(
+#             module_data_output=module,
+#         )
 
-####################################################################################################
-# Override Conditioning
-####################################################################################################
-"""
-Replace the denoise latents conditioning data with a custom set of conditioning data.
-"""
+# ####################################################################################################
+# # Override Conditioning
+# ####################################################################################################
+# """
+# Replace the denoise latents conditioning data with a custom set of conditioning data.
+# """
 
-@module_noise_pred("override_conditioning")
-def override_conditioning(
-    self: Modular_StableDiffusionGeneratorPipeline,
-    latents: torch.Tensor,
-    conditioning_data: ConditioningData,
-    module_kwargs: dict | None,
-    **kwargs,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    sub_module, sub_module_kwargs = resolve_module(module_kwargs["sub_module"])
-    new_cfg = module_kwargs["cfg"]
-    cfg_rescale = module_kwargs["cfg_rescale"]
-    new_conditioning_data = self.check_persistent_data(module_kwargs["module_id"], "conditioning_data")
-    if new_conditioning_data is None:
-        positives: str = module_kwargs["positive_conditioning_data"]
-        negatives: str = module_kwargs["negative_conditioning_data"]
-        if positives is not None:
-            c = self.context.conditioning.load(positives).conditionings[0].to(device=latents.device, dtype=latents.dtype)
-            extra_conditioning_info = c.extra_conditioning
-        else:
-            c = conditioning_data.text_embeddings
-            extra_conditioning_info = conditioning_data.extra
+# @module_noise_pred("override_conditioning")
+# def override_conditioning(
+#     self: Modular_StableDiffusionGeneratorPipeline,
+#     latents: torch.Tensor,
+#     conditioning_data: ConditioningData,
+#     module_kwargs: dict | None,
+#     **kwargs,
+# ) -> tuple[torch.Tensor, torch.Tensor]:
+#     sub_module, sub_module_kwargs = resolve_module(module_kwargs["sub_module"])
+#     new_cfg = module_kwargs["cfg"]
+#     cfg_rescale = module_kwargs["cfg_rescale"]
+#     new_conditioning_data = self.check_persistent_data(module_kwargs["module_id"], "conditioning_data")
+#     if new_conditioning_data is None:
+#         positives: str = module_kwargs["positive_conditioning_data"]
+#         negatives: str = module_kwargs["negative_conditioning_data"]
+#         if positives is not None:
+#             c = self.context.conditioning.load(positives).conditionings[0].to(device=latents.device, dtype=latents.dtype)
+#             extra_conditioning_info = c.extra_conditioning
+#         else:
+#             c = conditioning_data.text_embeddings
+#             extra_conditioning_info = conditioning_data.extra
         
-        if negatives is not None:
-            uc = self.context.conditioning.load(negatives).conditionings[0].to(device=latents.device, dtype=latents.dtype)
-        else:
-            uc = conditioning_data.unconditioned_embeddings
+#         if negatives is not None:
+#             uc = self.context.conditioning.load(negatives).conditionings[0].to(device=latents.device, dtype=latents.dtype)
+#         else:
+#             uc = conditioning_data.unconditioned_embeddings
         
-        new_conditioning_data = ConditioningData(
-            unconditioned_embeddings=uc,
-            text_embeddings=c,
-            guidance_scale=new_cfg,
-            guidance_rescale_multiplier=cfg_rescale,
-            extra=extra_conditioning_info,
-        )
-        self.set_persistent_data(module_kwargs["module_id"], "conditioning_data", new_conditioning_data)
+#         new_conditioning_data = ConditioningData(
+#             unconditioned_embeddings=uc,
+#             text_embeddings=c,
+#             guidance_scale=new_cfg,
+#             guidance_rescale_multiplier=cfg_rescale,
+#             extra=extra_conditioning_info,
+#         )
+#         self.set_persistent_data(module_kwargs["module_id"], "conditioning_data", new_conditioning_data)
     
-    noise_pred, latents = sub_module(
-        self=self,
-        latents=latents,
-        conditioning_data=new_conditioning_data,
-        module_kwargs=sub_module_kwargs,
-        **kwargs,
-    )
+#     noise_pred, latents = sub_module(
+#         self=self,
+#         latents=latents,
+#         conditioning_data=new_conditioning_data,
+#         module_kwargs=sub_module_kwargs,
+#         **kwargs,
+#     )
 
-    return noise_pred, latents
+#     return noise_pred, latents
 
-@invocation("override_conditioning_module",
-    title="Override Conditioning Module",
-    tags=["module", "modular"],
-    category="modular",
-    version="1.0.0",
-)
-class OverrideConditioningModuleInvocation(BaseInvocation):
-    """NP_MOD: Override Conditioning"""
-    sub_module: Optional[ModuleData] = InputField(
-        default=None,
-        description="The custom module to use for each noise prediction tile. No connection will use the default pipeline.",
-        title="[NP] SubModules",
-        input=Input.Connection,
-        ui_type=UIType.Any,
-    )
-    positive_conditioning_data: Optional[ConditioningField] = InputField(
-        default=None,
-        description="The positive conditioning data to use for the noise prediction. No connection will use the default pipeline.",
-        title="Positive Conditioning",
-        input=Input.Connection,
-    )
-    negative_conditioning_data: Optional[ConditioningField] = InputField(
-        default=None,
-        description="The negative conditioning data to use for the noise prediction. No connection will use the default pipeline.",
-        title="Negative Conditioning",
-        input=Input.Connection,
-    )
-    cfg: float = InputField(
-        title="CFG Scale",
-        ge=1,
-        default=7.5,
-    )
-    cfg_rescale: float = InputField(
-        title="CFG Rescale Multiplier",
-        ge=0,
-        lt=1,
-    )
+# @invocation("override_conditioning_module",
+#     title="Override Conditioning Module",
+#     tags=["module", "modular"],
+#     category="modular",
+#     version="1.0.0",
+# )
+# class OverrideConditioningModuleInvocation(BaseInvocation):
+#     """NP_MOD: Override Conditioning"""
+#     sub_module: Optional[ModuleData] = InputField(
+#         default=None,
+#         description="The custom module to use for each noise prediction tile. No connection will use the default pipeline.",
+#         title="[NP] SubModules",
+#         input=Input.Connection,
+#         ui_type=UIType.Any,
+#     )
+#     positive_conditioning_data: Optional[ConditioningField] = InputField(
+#         default=None,
+#         description="The positive conditioning data to use for the noise prediction. No connection will use the default pipeline.",
+#         title="Positive Conditioning",
+#         input=Input.Connection,
+#     )
+#     negative_conditioning_data: Optional[ConditioningField] = InputField(
+#         default=None,
+#         description="The negative conditioning data to use for the noise prediction. No connection will use the default pipeline.",
+#         title="Negative Conditioning",
+#         input=Input.Connection,
+#     )
+#     cfg: float = InputField(
+#         title="CFG Scale",
+#         ge=1,
+#         default=7.5,
+#     )
+#     cfg_rescale: float = InputField(
+#         title="CFG Rescale Multiplier",
+#         ge=0,
+#         lt=1,
+#     )
 
-    def invoke(self, context: InvocationContext) -> NP_ModuleDataOutput:
-        c = self.positive_conditioning_data.conditioning_name if self.positive_conditioning_data is not None else None
-        uc = self.negative_conditioning_data.conditioning_name if self.negative_conditioning_data is not None else None
-        module = NP_ModuleData(
-            name="Override Conditioning module",
-            module="override_conditioning",
-            module_kwargs={
-                "sub_module": self.sub_module,
-                "positive_conditioning_data": c,
-                "negative_conditioning_data": uc,
-                "cfg": self.cfg,
-                "cfg_rescale": self.cfg_rescale,
-                "module_id": self.id,
-            },
-        )
+#     def invoke(self, context: InvocationContext) -> NP_ModuleDataOutput:
+#         c = self.positive_conditioning_data.conditioning_name if self.positive_conditioning_data is not None else None
+#         uc = self.negative_conditioning_data.conditioning_name if self.negative_conditioning_data is not None else None
+#         module = NP_ModuleData(
+#             name="Override Conditioning module",
+#             module="override_conditioning",
+#             module_kwargs={
+#                 "sub_module": self.sub_module,
+#                 "positive_conditioning_data": c,
+#                 "negative_conditioning_data": uc,
+#                 "cfg": self.cfg,
+#                 "cfg_rescale": self.cfg_rescale,
+#                 "module_id": self.id,
+#             },
+#         )
 
-        return NP_ModuleDataOutput(
-            module_data_output=module,
-        )
-
-####################################################################################################
-# Regional Noise Prediction
-####################################################################################################
-class RegionalNoisePredictionData(BaseModel):
-    region_mask_image: str = Field(description="Name of the saved image to use as a mask for the region")
-    blur: float = Field(description="The amount to blur the mask")
-    crop: bool = Field(description="Whether to crop the region to the size of the mask")
-    crop_padding: int = Field(description="Padding (latent) to add to the region crop")
-    weight: float = Field(description="Weight to apply to the region")
-    sub_module: Optional[ModuleData] = Field(description="The custom module to use for the region. No connection will use the default pipeline.", default=None)
-
-@invocation_output("regional_noise_pred_output")
-class RegionalNoisePredictionOutput(BaseInvocationOutput):
-    data: RegionalNoisePredictionData = OutputField(description="The regional noise prediction data")
-
-@invocation("regional_module",
-    title="Regional Guidance Info",
-    tags=["module", "modular"],
-    category="modular",
-    version="1.0.0",
-)
-class RegionalNoiseDataModuleInvocation(BaseInvocation):
-    """NP_MOD: Regional Info"""
-    sub_module: Optional[ModuleData] = InputField(
-        default=None,
-        description="The custom module to use for the region. No connection will use the default pipeline.",
-        title="[NP] SubModules",
-        input=Input.Connection,
-        ui_type=UIType.Any,
-    )
-    region_mask: ImageField = InputField(
-        title="Region Mask",
-        description="The mask to use for the region",
-    )
-    blur: float = InputField(
-        title="Blur",
-        description="The amount to blur the mask",
-        ge=0,
-        default=0,
-    )
-    crop: bool = InputField(
-        title="Crop",
-        description="Whether to crop the region to the size of the mask",
-        default=False,
-    )
-    crop_padding: int = InputField(
-        title="Crop Padding",
-        description="Padding (latent) to add to the region crop",
-        default=0,
-    )
-    weight: float = InputField(
-        title="Weight",
-        description="Weight to apply to the region",
-        default=1.0,
-    )
-
-    def invoke(self, context: InvocationContext) -> RegionalNoisePredictionOutput:
-        module = RegionalNoisePredictionData(
-            region_mask_image=self.region_mask.image_name,
-            blur=self.blur,
-            crop=self.crop,
-            crop_padding=self.crop_padding,
-            weight=self.weight,
-            sub_module=self.sub_module,
-        )
-
-        return RegionalNoisePredictionOutput(
-            data=module,
-        )
-
-@module_noise_pred("regional_noise_pred")
-def regional_noise_pred(
-    self: Modular_StableDiffusionGeneratorPipeline,
-    latents: torch.Tensor,
-    t: torch.Tensor,
-    module_kwargs: dict | None,
-    control_data: List[ControlNetData] = None, #prevent from being passed in kwargs
-    t2i_adapter_data: list[T2IAdapterData] = None, #prevent from being passed in kwargs
-    **kwargs,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """
-    Default Sub Module: Applied to the entire latents input
-    region_info: list of RegionalNoisePredictionData
-        Each region_info element has a submodule and a mask where it gets applied
-    Results of the default and all regions are added together based on the region weights, then divided by the sum of the weights
-    """
-    sub_module, sub_module_kwargs = resolve_module(module_kwargs["default_sub_module"])
-    region_info: list[dict] = module_kwargs["region_info"] #gets serialized into a dict instead of a list
-    default_weight = module_kwargs["default_weight"]
-
-    default_noise_pred, default_latents = sub_module(
-        self=self,
-        latents=latents,
-        t=t,
-        module_kwargs=sub_module_kwargs,
-        control_data=control_data,
-        t2i_adapter_data=t2i_adapter_data,
-        **kwargs,
-    )
-    total_noise_pred = default_noise_pred * default_weight
-    total_latents = default_latents * default_weight
-    total_weight = torch.ones_like(default_noise_pred) * default_weight
-
-    #TODO: This whole persistent data setup is a bit of a mess. Something to consider during a rework towards object-based modules in the future.
-    if self.check_persistent_data(module_kwargs["module_id"], "initialized") is None:
-        # preprocess the masks
-        masklist = []
-        crop_tuples = []
-        for region in region_info:
-            mask = self.context.images.get_pil(region["region_mask_image"])
-            if region["blur"] > 0:
-                blur = ImageFilter.BoxBlur(region["blur"])
-                mask = mask.filter(blur)
-            mask = torch.from_numpy(np.asarray(mask.convert("L"))).to(latents.device)
-            #scale the values between 0 and 1
-            mask = mask / 255.0
-            #repeat the mask so it has the same shape as the latents
-            mask = mask.repeat(latents.shape[0], 4, 1, 1)
-            #scale the mask to have the same X and Y dimensions as the latents
-            mask = F.interpolate(mask, size=latents.shape[2:], mode="bilinear", align_corners=False)
-            masklist.append(mask)
-            self.set_persistent_data(module_kwargs["module_id"], "masklist", masklist)
-
-            
-            if region["crop"]:
-                #determine rectangular bounds of the mask, any values < 1 are considered part of the mask
-                mask_bounds = torch.nonzero(mask[0,0,:,:] < 1)
-                #get the min and max values for each dimension
-                min_x = torch.min(mask_bounds[:,0])
-                max_x = torch.max(mask_bounds[:,0])
-                min_y = torch.min(mask_bounds[:,1])
-                max_y = torch.max(mask_bounds[:,1])
-                """
-                Fix boundaries:
-                bounds should be shifted out by crop_padding
-                max - min should be expanded to the nearest multiple of 8
-                mins and maxs need to be adjusted to stay inside of the latents boundaries
-                """
-                min_x = max(min_x - region["crop_padding"], 0)
-                max_x = min(max_x + region["crop_padding"], latents.shape[2])
-                min_y = max(min_y - region["crop_padding"], 0)
-                max_y = min(max_y + region["crop_padding"], latents.shape[3])
-                #expand the to the nearest multiple of 8
-                width = max_x - min_x
-                width = width + (8 - width % 8)
-                max_x = max(min_x + width, latents.shape[2])
-                height = max_y - min_y
-                height = height + (8 - height % 8)
-                max_y = max(min_y + height, latents.shape[3])
-                crop_tuples.append((min_x, max_x, min_y, max_y))
-            else:
-                crop_tuples.append((0, latents.shape[2], 0, latents.shape[3]))
-        self.set_persistent_data(module_kwargs["module_id"], "crop_tuples", crop_tuples)
-
-        self.set_persistent_data(module_kwargs["module_id"], "initialized", True)
-    else:
-        masklist = self.check_persistent_data(module_kwargs["module_id"], "masklist")
-        crop_tuples = self.check_persistent_data(module_kwargs["module_id"], "crop_tuples")
-
-
-    for i, region in enumerate(region_info):
-        mask = masklist[i]
-        sub_module, sub_module_kwargs = resolve_module(region["sub_module"])
-        sub_latents = latents.clone() #clone to avoid modifying the original
-        sub_crop = crop_tuples[i]
-        sub_latents = sub_latents[:,:,sub_crop[0]:sub_crop[1],sub_crop[2]:sub_crop[3]]
-        sub_mask = mask[:,:,sub_crop[0]:sub_crop[1],sub_crop[2]:sub_crop[3]]
-
-        region_noise_pred, region_latents = sub_module(
-            self=self,
-            latents=sub_latents,
-            t=t,
-            module_kwargs=sub_module_kwargs,
-            control_data=None if region["crop"] else control_data,
-            t2i_adapter_data=None if region["crop"] else t2i_adapter_data,
-            **kwargs,
-        )
-        threshhold = 1 - (t.item() / self.scheduler.config.num_train_timesteps)
-        sub_mask_bool = sub_mask < threshhold
-
-        total_noise_pred[:,:,sub_crop[0]:sub_crop[1],sub_crop[2]:sub_crop[3]] += torch.where(sub_mask_bool, region_noise_pred * region["weight"], torch.zeros_like(region_noise_pred))
-        total_latents[:,:,sub_crop[0]:sub_crop[1],sub_crop[2]:sub_crop[3]] += torch.where(sub_mask_bool, region_latents * region["weight"], torch.zeros_like(region_latents))
-        total_weight[:,:,sub_crop[0]:sub_crop[1],sub_crop[2]:sub_crop[3]] += torch.where(sub_mask_bool, torch.ones_like(region_noise_pred) * region["weight"], torch.zeros_like(region_noise_pred))
-
-    total_noise_pred = total_noise_pred / total_weight
-    total_latents = total_latents / total_weight
-
-    return total_noise_pred, total_latents
-
-@invocation("regional_noise_pred_module",
-    title="Regional Noise Prediction Module",
-    tags=["module", "modular"],
-    category="modular",
-    version="1.0.0",
-)
-class RegionalNoisePredModuleInvocation(BaseInvocation):
-    """NP_MOD: Regional Noise Prediction"""
-    default_sub_module: Optional[ModuleData] = InputField(
-        default=None,
-        description="The custom module to use for the default noise prediction. No connection will use the default pipeline.",
-        title="[NP] Default SubModule",
-        input=Input.Connection,
-        ui_type=UIType.Any,
-    )
-    region_info: Union[list[RegionalNoisePredictionData], RegionalNoisePredictionData] = InputField(
-        default=[],
-        description="The custom modules to use for each region. No connection will use the default pipeline.",
-        title="[NP] Region Info",
-        input=Input.Connection,
-    )
-    default_weight: float = InputField(
-        title="Default Weight",
-        description="The weight to apply to the default noise prediction",
-        ge=0,
-        default=1.0,
-    )
-
-    def invoke(self, context: InvocationContext) -> NP_ModuleDataOutput:
-        if isinstance(self.region_info, RegionalNoisePredictionData):
-            self.region_info = [self.region_info]
-
-        module = NP_ModuleData(
-            name="Regional Noise Prediction module",
-            module="regional_noise_pred",
-            module_kwargs={
-                "default_sub_module": self.default_sub_module,
-                "region_info": self.region_info,
-                "default_weight": self.default_weight,
-                "module_id": self.id,
-            },
-        )
-
-        return NP_ModuleDataOutput(
-            module_data_output=module,
-        )
+#         return NP_ModuleDataOutput(
+#             module_data_output=module,
+#         )

@@ -1,12 +1,3 @@
-from __future__ import annotations
-
-import math
-from typing import Any, Callable, List, Optional, Union
-
-import torch
-
-from invokeai.backend.stable_diffusion.diffusion.conditioning_data import IPAdapterData, TextConditioningData
-
 from invokeai.app.invocations.latent import DenoiseLatentsInvocation
 from invokeai.backend.stable_diffusion.diffusers_pipeline import StableDiffusionGeneratorPipeline
 
@@ -21,9 +12,16 @@ from invokeai.invocation_api import (
     invocation_output,
 )
 
+import math
+from typing import Callable, List, Optional, Any, Union
+
+import torch
+from invokeai.backend.ip_adapter.unet_patcher import UNetPatcher
+from invokeai.backend.stable_diffusion.diffusion.conditioning_data import ConditioningData
 
 from invokeai.backend.stable_diffusion.diffusers_pipeline import (
     ControlNetData,
+    IPAdapterData,
     T2IAdapterData
 )
 from pydantic import BaseModel, Field
@@ -267,28 +265,23 @@ class Modular_StableDiffusionGeneratorPipeline(StableDiffusionGeneratorPipeline)
         return down_intrablock_additional_residuals
 
     #OVERRIDE to use custom_substep
-    @torch.inference_mode()
     def step(
         self,
         t: torch.Tensor,
         latents: torch.Tensor,
-        conditioning_data: TextConditioningData,
+        conditioning_data: ConditioningData,
         step_index: int,
         total_step_count: int,
-        scheduler_step_kwargs: dict[str, Any],
         additional_guidance: List[Callable] = None,
         control_data: List[ControlNetData] = None,
         ip_adapter_data: Optional[list[IPAdapterData]] = None,
         t2i_adapter_data: Optional[list[T2IAdapterData]] = None,
+        ip_adapter_unet_patcher: Optional[UNetPatcher] = None,
     ):
         # invokeai_diffuser has batched timesteps, but diffusers schedulers expect a single value
         timestep = t[0]
         if additional_guidance is None:
             additional_guidance = []
-
-        # one day we will expand this extension point, but for now it just does denoise masking
-        for guidance in additional_guidance:
-            latents = guidance(latents, timestep)
 
         if self.pre_noise_guidance_module_data is not None:
             # invoke custom module
@@ -309,6 +302,23 @@ class Modular_StableDiffusionGeneratorPipeline(StableDiffusionGeneratorPipeline)
         #     i.e. before or after passing it to InvokeAIDiffuserComponent
         latent_model_input = self.scheduler.scale_model_input(latents, timestep)
 
+        # handle IP-Adapter OUTSIDE of custom modules
+        if self.use_ip_adapter and ip_adapter_data is not None:  # somewhat redundant but logic is clearer
+            for i, single_ip_adapter_data in enumerate(ip_adapter_data):
+                first_adapter_step = math.floor(single_ip_adapter_data.begin_step_percent * total_step_count)
+                last_adapter_step = math.ceil(single_ip_adapter_data.end_step_percent * total_step_count)
+                weight = (
+                    single_ip_adapter_data.weight[step_index]
+                    if isinstance(single_ip_adapter_data.weight, List)
+                    else single_ip_adapter_data.weight
+                )
+                if step_index >= first_adapter_step and step_index <= last_adapter_step:
+                    # Only apply this IP-Adapter if the current step is within the IP-Adapter's begin/end step range.
+                    ip_adapter_unet_patcher.set_scale(i, weight)
+                else:
+                    # Otherwise, set the IP-Adapter's scale to 0, so it has no effect.
+                    ip_adapter_unet_patcher.set_scale(i, 0.0)
+
 
         # default to standard diffusion pipeline result
         if self.noise_pred_module_data is None:
@@ -326,28 +336,29 @@ class Modular_StableDiffusionGeneratorPipeline(StableDiffusionGeneratorPipeline)
             t=t,  # TODO: debug how handled batched and non batched timesteps
             step_index=step_index,
             total_step_count=total_step_count,
-            ip_adapter_data=ip_adapter_data,
             conditioning_data=conditioning_data,
             module_kwargs = module_kwargs,
             control_data=control_data, # passed down for tiling nodes to recalculate control blocks
             t2i_adapter_data=t2i_adapter_data, # passed down for tiling nodes to recalculate t2i blocks
         )
+        ################################################################################
 
         # compute the previous noisy sample x_t -> x_t-1
-        step_output = self.scheduler.step(noise_pred, timestep, latents, **scheduler_step_kwargs)
+        # here latents is substituted for the returned original_latents because the custom modules may have changed them
+        step_output = self.scheduler.step(noise_pred, timestep, original_latents, **conditioning_data.scheduler_args)
 
-        # TODO: discuss injection point options. For now this is a patch to get progress images working with inpainting again.
+        # TODO: issue to diffusers?
+        # undo internal counter increment done by scheduler.step, so timestep can be resolved as before call
+        # this needed to be able call scheduler.add_noise with current timestep
+        if self.scheduler.order == 2:
+            self.scheduler._index_counter[timestep.item()] -= 1
+
+        # TODO: this additional_guidance extension point feels redundant with InvokeAIDiffusionComponent.
+        #    But the way things are now, scheduler runs _after_ that, so there was
+        #    no way to use it to apply an operation that happens after the last scheduler.step.
         for guidance in additional_guidance:
-            # apply the mask to any "denoised" or "pred_original_sample" fields
-            if hasattr(step_output, "denoised"):
-                step_output.pred_original_sample = guidance(step_output.denoised, self.scheduler.timesteps[-1])
-            elif hasattr(step_output, "pred_original_sample"):
-                step_output.pred_original_sample = guidance(
-                    step_output.pred_original_sample, self.scheduler.timesteps[-1]
-                )
-            else:
-                step_output.pred_original_sample = guidance(latents, self.scheduler.timesteps[-1])
-
+            step_output = guidance(step_output, timestep, conditioning_data)
+        
         prev_sample: torch.Tensor = step_output["prev_sample"] #TODO: Check that this works for all samplers
         latent_type = prev_sample.dtype
         if self.post_noise_guidance_module_data is not None:
@@ -364,7 +375,11 @@ class Modular_StableDiffusionGeneratorPipeline(StableDiffusionGeneratorPipeline)
             )
             
             step_output["prev_sample"] = modified_step_output.to(dtype=latent_type)
-        
+
+        # restore internal counter
+        if self.scheduler.order == 2:
+            self.scheduler._index_counter[timestep.item()] += 1
+
         return step_output
 
 
