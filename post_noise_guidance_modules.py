@@ -1,5 +1,6 @@
 from .modular_decorators import module_post_noise_guidance, get_post_noise_guidance_module
-from .modular_denoise_latents import Modular_StableDiffusionGeneratorPipeline, ModuleData, PoG_ModuleDataOutput, PoG_ModuleData
+from .modular_denoise_latents import Modular_StableDiffusionGeneratorPipeline
+from .models import ModuleData, PoG_ModuleData, PoG_ModuleDataOutput
 
 import torch
 import numpy as np

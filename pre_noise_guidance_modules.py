@@ -1,5 +1,6 @@
 from .modular_decorators import module_pre_noise_guidance, get_pre_noise_guidance_module
-from .modular_denoise_latents import Modular_StableDiffusionGeneratorPipeline, ModuleData, PreG_ModuleDataOutput, PreG_ModuleData
+from .modular_denoise_latents import Modular_StableDiffusionGeneratorPipeline
+from .models import ModuleData, PreG_ModuleData, PreG_ModuleDataOutput
 
 import torch
 from typing import Literal, Optional, Callable, Union, List

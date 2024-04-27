@@ -1,4 +1,7 @@
-from .modular_denoise_latents import Modular_DenoiseLatentsInvocation
+from .modular_denoise_latents import (
+    Modular_DenoiseLatentsInvocation,
+    #ModuleCollectionInvocation,
+)
 from .noise_prediction_modules import (
     StandardStepModuleInvocation,
     MultiDiffusionSamplingModuleInvocation,
@@ -18,3 +21,5 @@ from .post_noise_guidance_modules import (
     default_case,
 )
 from .analyse_latents import AnalyzeLatentsInvocation
+
+from .models import ModuleCollectionInvocation

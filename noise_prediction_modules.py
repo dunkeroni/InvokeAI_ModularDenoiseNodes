@@ -1,5 +1,6 @@
 from .modular_decorators import module_noise_pred, get_noise_prediction_module
-from .modular_denoise_latents import Modular_StableDiffusionGeneratorPipeline, ModuleData, NP_ModuleDataOutput, NP_ModuleData
+from .modular_denoise_latents import Modular_StableDiffusionGeneratorPipeline
+from .models import ModuleData, NP_ModuleDataOutput, NP_ModuleData
 
 from invokeai.backend.stable_diffusion.diffusers_pipeline import ControlNetData, T2IAdapterData
 from invokeai.backend.stable_diffusion.diffusion.conditioning_data import IPAdapterData, TextConditioningData
@@ -1347,3 +1348,11 @@ class SkipResidualModuleInvocation(BaseInvocation):
 #         return NP_ModuleDataOutput(
 #             module_data_output=module,
 #         )
+
+####################################################################################################
+# Dynamic CFG Scaling
+# From: https://arxiv.org/abs/2404.13040
+####################################################################################################
+"""
+Change CFG into a ramping schedule based on the current timestep.
+"""
