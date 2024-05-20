@@ -86,6 +86,8 @@ class ExtendableStableDiffusionGeneratorPipeline(StableDiffusionGeneratorPipelin
         extension_handler: ExtensionHandlerSD12X,
         callback: Callable[[PipelineIntermediateState], None] = None,
     ) -> torch.Tensor:
+        #TODO Do we even need this function layer here? Could call directly to generate_latents_from_embeddings instead
+
         if data.init_timestep.shape[0] == 0:
             return data.latents
 
@@ -111,15 +113,6 @@ class ExtendableStableDiffusionGeneratorPipeline(StableDiffusionGeneratorPipelin
         self,
         data: DenoiseLatentsData,
         extension_handler: ExtensionHandlerSD12X,
-        # latents: torch.Tensor,
-        # timesteps,
-        # conditioning_data: TextConditioningData,
-        # scheduler_step_kwargs: dict[str, Any],
-        # *,
-        # additional_guidance: List[Callable] = None,
-        # control_data: List[ControlNetData] = None,
-        # ip_adapter_data: Optional[list[IPAdapterData]] = None,
-        # t2i_adapter_data: Optional[list[T2IAdapterData]] = None,
         callback: Callable[[PipelineIntermediateState], None] = None,
     ) -> torch.Tensor:
         self._adjust_memory_efficient_attention(data.latents)
@@ -164,17 +157,8 @@ class ExtendableStableDiffusionGeneratorPipeline(StableDiffusionGeneratorPipelin
                 data.step_index = i
                 step_output = self.step(
                     batched_t,
-                    # latents,
-                    # conditioning_data,
-                    # step_index=i,
                     data = data,
                     extension_handler = extension_handler,
-                    # total_step_count=len(timesteps),
-                    # scheduler_step_kwargs=scheduler_step_kwargs,
-                    # additional_guidance=additional_guidance,
-                    # control_data=control_data,
-                    # ip_adapter_data=ip_adapter_data,
-                    # t2i_adapter_data=t2i_adapter_data,
                 )
                 data.latents = step_output.prev_sample
                 predicted_original = getattr(step_output, "pred_original_sample", None)
@@ -199,28 +183,13 @@ class ExtendableStableDiffusionGeneratorPipeline(StableDiffusionGeneratorPipelin
         t: torch.Tensor,
         data: DenoiseLatentsData,
         extension_handler: ExtensionHandlerSD12X,
-        # latents: torch.Tensor,
-        # conditioning_data: TextConditioningData,
-        # step_index: int,
-        # total_step_count: int,
-        # scheduler_step_kwargs: dict[str, Any],
-        # additional_guidance: List[Callable] = None,
-        # control_data: List[ControlNetData] = None,
-        # ip_adapter_data: Optional[list[IPAdapterData]] = None,
-        # t2i_adapter_data: Optional[list[T2IAdapterData]] = None,
     ):
         # invokeai_diffuser has batched timesteps, but diffusers schedulers expect a single value
         timestep = t[0]
-        # if additional_guidance is None:
-        #     additional_guidance = []
 
-        # one day we will expand this extension point, but for now it just does denoise masking
-        # for guidance in additional_guidance:
-        #     latents = guidance(latents, timestep)
+        extension_handler.call_modifiers("modify_data_before_scaling", data=data, t=timestep)
 
-        # TODO: should this scaling happen here or inside self._unet_forward?
-        #     i.e. before or after passing it to InvokeAIDiffuserComponent
-        latent_model_input = self.scheduler.scale_model_input(data.latents, timestep)
+        data.scaled_model_inputs = self.scheduler.scale_model_input(data.latents, timestep)
 
         # Handle ControlNet(s)
         down_block_additional_residuals = None
@@ -228,7 +197,7 @@ class ExtendableStableDiffusionGeneratorPipeline(StableDiffusionGeneratorPipelin
         if data.controlnet_data is not None:
             down_block_additional_residuals, mid_block_additional_residual = self.invokeai_diffuser.do_controlnet_step(
                 control_data=data.controlnet_data,
-                sample=latent_model_input,
+                sample=data.scaled_model_inputs,
                 timestep=timestep,
                 step_index=data.step_index,
                 total_step_count=len(data.timesteps),
@@ -263,9 +232,11 @@ class ExtendableStableDiffusionGeneratorPipeline(StableDiffusionGeneratorPipelin
                         accum_adapter_state[idx] += value * t2i_adapter_weight
 
             down_intrablock_additional_residuals = accum_adapter_state
+        
+        extension_handler.call_modifiers("modify_data_before_noise_prediction", data=data, t=timestep)
 
         uc_noise_pred, c_noise_pred = self.invokeai_diffuser.do_unet_step(
-            sample=latent_model_input,
+            sample=data.scaled_model_inputs,
             timestep=t,  # TODO: debug how handled batched and non batched timesteps
             step_index=data.step_index,
             total_step_count=len(data.timesteps),
@@ -280,14 +251,20 @@ class ExtendableStableDiffusionGeneratorPipeline(StableDiffusionGeneratorPipelin
         if isinstance(guidance_scale, list):
             guidance_scale = guidance_scale[data.step_index]
 
-        noise_pred = self.invokeai_diffuser._combine(uc_noise_pred, c_noise_pred, guidance_scale)
-        guidance_rescale_multiplier = data.conditioning_data.guidance_rescale_multiplier
-        if guidance_rescale_multiplier > 0:
-            noise_pred = self._rescale_cfg(
-                noise_pred,
-                c_noise_pred,
-                guidance_rescale_multiplier,
-            )
+        noise_pred = extension_handler.call_swap(
+            "combine_noise",
+            default=self.invokeai_diffuser._combine,
+            unconditioned_next_x=uc_noise_pred,
+            conditioned_next_x=c_noise_pred,
+            guidance_scale=guidance_scale
+        )
+        # guidance_rescale_multiplier = data.conditioning_data.guidance_rescale_multiplier
+        # if guidance_rescale_multiplier > 0:
+        #     noise_pred = self._rescale_cfg(
+        #         noise_pred,
+        #         c_noise_pred,
+        #         guidance_rescale_multiplier,
+        #     )
 
         # compute the previous noisy sample x_t -> x_t-1
         step_output = self.scheduler.step(noise_pred, timestep, data.latents, **data.scheduler_step_kwargs)

@@ -71,6 +71,7 @@ class DenoiseLatentsData:
     conditioning_data: TextConditioningData = None
     noise: torch.Tensor = None
     latents: torch.Tensor = None
+    scaled_model_inputs: torch.Tensor = None
     timesteps: list[int] = field(default_factory=list)
     init_timestep: int = 0
     step_index: int = 0
@@ -90,6 +91,7 @@ class DenoiseLatentsData:
             conditioning_data=self.conditioning_data,
             noise=self.noise.clone() if self.noise is not None else None,
             latents=self.latents.clone() if self.latents is not None else None,
+            scaled_model_inputs=self.scaled_model_inputs.clone() if self.scaled_model_inputs is not None else None,
             timesteps=self.timesteps.copy(),
             init_timestep=self.init_timestep,
             step_index=self.step_index,
@@ -196,9 +198,11 @@ class ExtensionHandlerSD12X:
         if method in self.swaps:
             swap: Callable = self.swaps[method].list_swaps()[method]
             if callable(swap):
-                swap(**kwargs)
+                return swap(**kwargs)
             else:
                 raise ValueError(f"Method {method} does not relate to a callable in extension {self.swaps[method].extension_type} list_swaps()")
+        else:
+            return default(**kwargs)
     
     def enter_contexts(self, exit_stack: ExitStack):
         """Enter the context of each extension"""
