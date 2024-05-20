@@ -13,6 +13,9 @@ from invokeai.invocation_api import (
     ConditioningField,
     LatentsField,
     UNetField,
+    OutputField,
+    invocation_output,
+    BaseInvocationOutput,
 )
 from invokeai.backend.stable_diffusion.diffusion.conditioning_data import (
     BasicConditioningInfo,
@@ -43,7 +46,7 @@ class DenoiseLatentsInputs:
     cfg_scale: Union[float, list[float]]
     denoising_start: float
     denoising_end: float
-    scheduler: SchedulerMixin
+    scheduler: str
     unet: UNetField
     control: Union[ControlField, list[ControlField]] | None
     ip_adapter: Union[IPAdapterField, list[IPAdapterField]] | None
@@ -123,6 +126,13 @@ class GuidanceField(BaseModel):
     priority: int = Field(default=100, description="Execution order for multiple guidance. Lower numbers go first.")
     extension_kwargs: dict[str, Any] = Field(default={}, description="Keyword arguments for the guidance extension")
 
+@invocation_output("guidance_module_output")
+class GuidanceDataOutput(BaseInvocationOutput):
+    guidance_data_output: GuidanceField | None = OutputField(
+        title="Guidance Module",
+        description="Information to alter the denoising process"
+    )
+
 class ExtensionHandlerSD12X:
     """
     Extension Handler for the DenoiseLatentsSD12X class
@@ -135,6 +145,8 @@ class ExtensionHandlerSD12X:
 
         if extensions is None:
             extensions = [] # empty list if no extensions are provided
+        elif not isinstance(extensions, list):
+            extensions = [extensions]
         
         for extension in extensions:
             extension_class: Type[DenoiseExtensionSD12X] = SD12X_EXTENSIONS.get(extension.guidance_name)
@@ -293,13 +305,13 @@ class DenoiseExtensionSD12X(ABC):
         """
         pass
     
-    def modify_data_before_denoising(self, data: DenoiseLatentsData) -> DenoiseLatentsData:
+    def modify_data_before_denoising(self, data: DenoiseLatentsData):
         """
         Modify the latents before the denoising process begins.
         """
         pass
 
-    def modify_data_before_scaling(self, data: DenoiseLatentsData, t: torch.Tensor) -> DenoiseLatentsData:
+    def modify_data_before_scaling(self, data: DenoiseLatentsData, t: torch.Tensor):
         """
         Samplers apply a scalar multiplication to the latents before predicting noise.
         This method allows you to modify the latents before this scaling is applied each step.
@@ -307,21 +319,21 @@ class DenoiseExtensionSD12X(ABC):
         """
         pass
 
-    def modify_data_before_noise_prediction(self, data: DenoiseLatentsData, t: torch.Tensor) -> DenoiseLatentsData:
+    def modify_data_before_noise_prediction(self, data: DenoiseLatentsData, t: torch.Tensor):
         """
         Last chance to modify latents before noise is predicted.
         Additional channels for inpaint models are added here.
         """
         pass
 
-    def modify_result_before_callback(self, step_output, data: DenoiseLatentsData):
+    def modify_result_before_callback(self, step_output, data: DenoiseLatentsData, t: torch.Tensor):
         """
         step_output.prev_sample is the current latents that will be used in the next step.
         if step_output.pred_original_sample is provided/modified, it will be used in the image preview for the user.
         """
         pass
 
-    def modify_data_after_denoising(self, data: DenoiseLatentsData) -> DenoiseLatentsData:
+    def modify_data_after_denoising(self, data: DenoiseLatentsData):
         """
         Final result of the latents after all steps are complete.
         """

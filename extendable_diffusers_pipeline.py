@@ -107,6 +107,7 @@ class ExtendableStableDiffusionGeneratorPipeline(StableDiffusionGeneratorPipelin
         finally:
             self.invokeai_diffuser.model_forward_callback = self._unet_forward
 
+        extension_handler.call_modifiers("modify_data_after_denoising", data=data)
         return data.latents
 
     def generate_latents_from_embeddings(
@@ -161,6 +162,12 @@ class ExtendableStableDiffusionGeneratorPipeline(StableDiffusionGeneratorPipelin
                     extension_handler = extension_handler,
                 )
                 data.latents = step_output.prev_sample
+
+                extension_handler.call_modifiers(
+                    "modify_result_before_callback",
+                    step_output=step_output,
+                    data=data, t=batched_t[0]
+                )
                 predicted_original = getattr(step_output, "pred_original_sample", None)
 
                 if callback is not None:
@@ -258,28 +265,9 @@ class ExtendableStableDiffusionGeneratorPipeline(StableDiffusionGeneratorPipelin
             conditioned_next_x=c_noise_pred,
             guidance_scale=guidance_scale
         )
-        # guidance_rescale_multiplier = data.conditioning_data.guidance_rescale_multiplier
-        # if guidance_rescale_multiplier > 0:
-        #     noise_pred = self._rescale_cfg(
-        #         noise_pred,
-        #         c_noise_pred,
-        #         guidance_rescale_multiplier,
-        #     )
 
         # compute the previous noisy sample x_t -> x_t-1
         step_output = self.scheduler.step(noise_pred, timestep, data.latents, **data.scheduler_step_kwargs)
-
-        # TODO: discuss injection point options. For now this is a patch to get progress images working with inpainting again.
-        # for guidance in additional_guidance:
-        #     # apply the mask to any "denoised" or "pred_original_sample" fields
-        #     if hasattr(step_output, "denoised"):
-        #         step_output.pred_original_sample = guidance(step_output.denoised, self.scheduler.timesteps[-1])
-        #     elif hasattr(step_output, "pred_original_sample"):
-        #         step_output.pred_original_sample = guidance(
-        #             step_output.pred_original_sample, self.scheduler.timesteps[-1]
-        #         )
-        #     else:
-        #         step_output.pred_original_sample = guidance(latents, self.scheduler.timesteps[-1])
 
         return step_output
 

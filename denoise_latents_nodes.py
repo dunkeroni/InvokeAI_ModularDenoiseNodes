@@ -68,22 +68,6 @@ from .denoise_latents_extensions import (
     ExtensionHandlerSD12X,
 )
 
-
-class ModuleData(BaseModel):
-    name: str = Field(description="user-facing name of the module")
-    module_type: str = Field(description="software type of the module")
-    module: str = Field(description="Name of the module function")
-    module_kwargs: dict | None = Field(description="Keyword arguments to pass to the module function")
-
-
-@invocation_output("guidance_module_output")
-class ModuleDataOutput(BaseInvocationOutput):
-    module_data_output: ModuleData | None = OutputField(
-        title="Guidance Module",
-        description="Information to alter the denoising process"
-    )
-
-
 @invocation(
     "modular_denoise_latents",
     title="Modular Denoise Latents",
@@ -147,9 +131,6 @@ class ModularDenoiseLatentsInvocation(BaseInvocation):
         input=Input.Connection,
         ui_order=7,
     )
-    # cfg_rescale_multiplier: float = InputField(
-    #     title="CFG Rescale Multiplier", default=0, ge=0, lt=1, description=FieldDescriptions.cfg_rescale_multiplier
-    # )
     latents: Optional[LatentsField] = InputField(
         default=None,
         description=FieldDescriptions.latents,
@@ -705,6 +686,7 @@ class ModularDenoiseLatentsInvocation(BaseInvocation):
             ):
                 assert isinstance(unet, UNet2DConditionModel)
                 data = DenoiseLatentsData( # centralized structure for all data
+                    unet=unet,
                     seed=seed,
                     t2i_adapter_data=t2i_adapter_data,
                 ) 

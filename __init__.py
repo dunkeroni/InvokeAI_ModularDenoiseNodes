@@ -27,3 +27,7 @@ from .analyse_latents import AnalyzeLatentsInvocation
 from .denoise_latents_nodes import (
     ModularDenoiseLatentsInvocation,
 )
+from .ext_mask_guidance import (
+    EXT_GradientMaskInvocation,
+    MaskGuidance,
+)
