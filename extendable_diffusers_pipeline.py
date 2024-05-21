@@ -259,7 +259,7 @@ class ExtendableStableDiffusionGeneratorPipeline(StableDiffusionGeneratorPipelin
             guidance_scale = guidance_scale[data.step_index]
 
         noise_pred = extension_handler.call_swap(
-            "combine_noise",
+            "swap_combine_noise",
             default=self.invokeai_diffuser._combine,
             unconditioned_next_x=uc_noise_pred,
             conditioned_next_x=c_noise_pred,

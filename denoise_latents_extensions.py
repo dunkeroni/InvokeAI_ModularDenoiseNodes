@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 import torch
 from contextlib import ExitStack
-from typing import Union, Type, Any, List, Callable
+from typing import Union, Type, Any, Callable
 from diffusers.schedulers.scheduling_utils import SchedulerMixin
 from diffusers.models.unets.unet_2d_condition import UNet2DConditionModel
 from dataclasses import dataclass, field
@@ -18,23 +18,28 @@ from invokeai.invocation_api import (
     BaseInvocationOutput,
 )
 from invokeai.backend.stable_diffusion.diffusion.conditioning_data import (
-    BasicConditioningInfo,
-    IPAdapterConditioningInfo,
     IPAdapterData,
-    Range,
-    SDXLConditioningInfo,
     TextConditioningData,
-    TextConditioningRegions,
 )
 from invokeai.backend.stable_diffusion.diffusers_pipeline import (
     ControlNetData,
     StableDiffusionGeneratorPipeline,
     T2IAdapterData,
 )
-
 from pydantic import BaseModel, Field
+from invokeai.backend.util.logging import info, warning, error
 
 SD12X_EXTENSIONS = {}
+
+def guidance_extension_12X(name: str):
+    """Register a guidance extension class object under a string reference"""
+    def decorator(cls: Type[DenoiseExtensionSD12X]):
+        if name in SD12X_EXTENSIONS:
+            raise ValueError(f"Extension {name} already registered")
+        info(f"Registered extension {cls.__name__} as {name}")
+        SD12X_EXTENSIONS[name] = cls
+        return cls
+    return decorator
 
 @dataclass
 class DenoiseLatentsInputs:
@@ -109,16 +114,6 @@ class DenoiseLatentsData:
             seed=self.seed,
             misc=self.misc.copy()
         )
-
-def guidance_extension_12X(name: str):
-    """Register a guidance extension class object under a string reference"""
-    def decorator(cls: Type[DenoiseExtensionSD12X]):
-        if name in SD12X_EXTENSIONS:
-            raise ValueError(f"Extension {name} already registered")
-        print(f"Registered extension {name} as {cls.__name__}")
-        SD12X_EXTENSIONS[name] = cls
-        return cls
-    return decorator
 
 class GuidanceField(BaseModel):
     """Guidance information for extensions in the denoising process."""
@@ -210,7 +205,7 @@ class ExtensionHandlerSD12X:
         if method in self.swaps:
             swap: Callable = self.swaps[method].list_swaps()[method]
             if callable(swap):
-                return swap(**kwargs)
+                return swap(default=default, **kwargs)
             else:
                 raise ValueError(f"Method {method} does not relate to a callable in extension {self.swaps[method].extension_type} list_swaps()")
         else:
@@ -338,3 +333,13 @@ class DenoiseExtensionSD12X(ABC):
         Final result of the latents after all steps are complete.
         """
         pass
+
+    def swap_combine_noise(
+            self,
+            default: Callable,
+            unconditioned_next_x: torch.Tensor,
+            conditioned_next_x: torch.Tensor,
+            guidance_scale: float,
+        ) -> torch.Tensor:
+        """Combine unconditional and conditional noise predictions"""
+        return default(unconditioned_next_x, conditioned_next_x, guidance_scale)

@@ -31,3 +31,7 @@ from .ext_mask_guidance import (
     EXT_GradientMaskInvocation,
     MaskGuidance,
 )
+from .ext_cfg_rescale import (
+    EXT_CFGRescaleGuidanceInvocation,
+    CfgRescaleGuidance,
+)

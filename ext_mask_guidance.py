@@ -23,11 +23,10 @@ from invokeai.invocation_api import (
 )
 from .denoise_latents_extensions import (
     GuidanceField,
-    GuidanceDataOutput,
 )
 import torchvision.transforms as T
 import numpy as np
-from invokeai.backend.model_manager import BaseModelType, LoadedModel
+from invokeai.backend.model_manager import LoadedModel
 from invokeai.backend.model_manager.config import MainConfigBase, ModelVariantType
 from invokeai.app.invocations.latent import image_resized_to_grid_as_tensor, ImageToLatentsInvocation
 
