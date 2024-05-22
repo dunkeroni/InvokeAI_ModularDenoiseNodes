@@ -35,3 +35,7 @@ from .ext_cfg_rescale import (
     EXT_CFGRescaleGuidanceInvocation,
     CfgRescaleGuidance,
 )
+from .ext_sigma_scaling import (
+    EXT_SigmaGuidanceInvocation,
+    SigmaScalingGuidance,
+)  

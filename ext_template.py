@@ -23,7 +23,7 @@ class TemplateGuidance(DenoiseExtensionSD12X):
     def list_swaps(self) -> dict[str, Callable[..., Any]]:
         return super().list_swaps() #REPLACE with {functionname: self.functionname, ...} if you have any swaps
     
-    def __post_init__(self, enabled: bool, rescale_multiplier: float):
+    def __post_init__(self, enabled: bool):
         self.enabled = enabled
 
 @invocation(
