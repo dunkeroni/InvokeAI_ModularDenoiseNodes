@@ -5,15 +5,7 @@ from invokeai.invocation_api import (
     invocation,
     BaseInvocation,
     InputField,
-    Input,
-    ImageField,
-    VAEField,
-    UNetField,
-    FieldDescriptions,
     InvocationContext,
-    invocation_output,
-    OutputField,
-    BaseInvocationOutput
 )
 from .denoise_latents_extensions import (
     GuidanceField,
@@ -70,7 +62,7 @@ class CfgRescaleGuidance(DenoiseExtensionSD12X):
 class EXT_CFGRescaleGuidanceInvocation(BaseInvocation):
     priority: int = InputField(default=500, description="Priority of the guidance module", ui_order=0, ui_hidden=True)
     enabled: bool = InputField(default=True, description="Enable rescale guidance", ui_order=1)
-    rescale_multiplier: float = InputField(default=0.7, description="Rescale multiplier", ui_order=2)
+    rescale_multiplier: float = InputField(ge=0, lt=1, default=0.7, description="Rescale multiplier", ui_order=2)
 
     def invoke(self, context: InvocationContext) -> GuidanceDataOutput:
 
