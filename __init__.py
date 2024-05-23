@@ -39,3 +39,7 @@ from .ext_sigma_scaling import (
     EXT_SigmaGuidanceInvocation,
     SigmaScalingGuidance,
 )  
+from .ext_tiled_denoise import (
+    EXT_TiledDenoiseGuidanceInvocation,
+    TiledDenoiseGuidance,
+)

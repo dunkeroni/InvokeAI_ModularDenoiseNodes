@@ -343,3 +343,30 @@ class DenoiseExtensionSD12X(ABC):
         ) -> torch.Tensor:
         """Combine unconditional and conditional noise predictions"""
         return default(unconditioned_next_x, conditioned_next_x, guidance_scale)
+    
+    def swap_do_unet_step(
+            self,
+            default: Callable,
+            sample: torch.Tensor,
+            timestep: torch.Tensor,  # TODO: debug how handled batched and non batched timesteps
+            step_index: int,
+            total_step_count: int,
+            conditioning_data: TextConditioningData,
+            ip_adapter_data: IPAdapterData,
+            down_block_additional_residuals: list[torch.Tensor],  # for ControlNet
+            mid_block_additional_residual: torch.Tensor,  # for ControlNet
+            down_intrablock_additional_residuals: list[torch.Tensor],  # for T2I-Adapter
+        ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Perform a step in the UNet model, returns unconditional and conditional noise predictions"""
+        return default(
+            sample,
+            timestep,
+            step_index,
+            total_step_count,
+            conditioning_data,
+            ip_adapter_data,
+            down_block_additional_residuals,
+            mid_block_additional_residual,
+            down_intrablock_additional_residuals
+        )
+        

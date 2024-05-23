@@ -1,5 +1,4 @@
 from .denoise_latents_extensions import DenoiseExtensionSD12X, DenoiseLatentsData, guidance_extension_12X
-import torch
 from typing import Callable, Any
 from invokeai.invocation_api import (
     invocation,
@@ -28,10 +27,9 @@ class SigmaScalingGuidance(DenoiseExtensionSD12X):
     def __post_init__(self, scaling: list[float]):
         self.scaling = scaling
     
-    def modify_data_before_denoising(self, data: DenoiseLatentsData) -> DenoiseLatentsData:
+    def modify_data_before_denoising(self, data: DenoiseLatentsData):
         #get sigmas from scheduler
         sigmas = data.scheduler.sigmas
-        print(f"sigmas: {sigmas}")
         num_sigmas = len(sigmas)
         #create a piecewise linear function with multiple segments based on self.scaling points and num_sigmas
         scaling = self.scaling
@@ -42,7 +40,6 @@ class SigmaScalingGuidance(DenoiseExtensionSD12X):
             end = (i + 1) * segment_size
             for j in range(start, end):
                 sigmas[j] *= scaling[i] + (scaling[i + 1] - scaling[i]) * (j - start) / segment_size
-        print(f"modified sigmas: {sigmas}")
         
 
 @invocation(
@@ -50,21 +47,23 @@ class SigmaScalingGuidance(DenoiseExtensionSD12X):
     title="EXT: Sigma Scaling",
     tags=["guidance", "extension", "sigma", "scaling"],
     category="guidance",
-    version="1.0.0",
+    version="1.1.0",
 )
 class EXT_SigmaGuidanceInvocation(BaseInvocation):
     """
     This is a template for the user-facing node that activates a guidance extension.
     """
     priority: int = InputField(default=500, description="Priority of the guidance module", ui_order=0)
-    early_scaling: float = InputField(default=1, ge=0, lt=2, description="Early scaling", ui_order=1)
-    mid_scaling: float = InputField(default=1, ge=0, lt=2, description="Mid scaling", ui_order=2)
-    late_scaling: float = InputField(default=1, ge=0, lt=2, description="Late scaling", ui_order=3)
+    scaling_point_1: float = InputField(default=1, ge=0, lt=2, description="Scaling at the start of the process", ui_order=1)
+    scaling_point_2: float = InputField(default=1, ge=0, lt=2, description="At 25%", ui_order=2)
+    scaling_point_3: float = InputField(default=1, ge=0, lt=2, description="At 50%", ui_order=3)
+    scaling_point_4: float = InputField(default=1, ge=0, lt=2, description="At 75%", ui_order=4)
+    scaling_point_5: float = InputField(default=1, ge=0, lt=2, description="Scaling at the final steps", ui_order=5)
 
     def invoke(self, context: InvocationContext) -> GuidanceDataOutput:
 
         kwargs = dict(
-            scaling=[self.early_scaling, self.mid_scaling, self.late_scaling],
+            scaling=[self.scaling_point_1, self.scaling_point_2, self.scaling_point_3, self.scaling_point_4, self.scaling_point_5]
         )
 
         return GuidanceDataOutput(

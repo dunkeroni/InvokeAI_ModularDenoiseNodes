@@ -242,7 +242,9 @@ class ExtendableStableDiffusionGeneratorPipeline(StableDiffusionGeneratorPipelin
         
         extension_handler.call_modifiers("modify_data_before_noise_prediction", data=data, t=timestep)
 
-        uc_noise_pred, c_noise_pred = self.invokeai_diffuser.do_unet_step(
+        uc_noise_pred, c_noise_pred = extension_handler.call_swap(
+            "swap_do_unet_step",
+            default=self.invokeai_diffuser.do_unet_step,
             sample=data.scaled_model_inputs,
             timestep=t,  # TODO: debug how handled batched and non batched timesteps
             step_index=data.step_index,
