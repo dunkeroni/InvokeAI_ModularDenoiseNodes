@@ -1,5 +1,4 @@
 from .denoise_latents_extensions import DenoiseExtensionSD12X, DenoiseLatentsData, guidance_extension_12X
-from invokeai.backend.util.logging import info, warning, error
 import torch
 from typing import Callable, Any, Literal
 from invokeai.invocation_api import (

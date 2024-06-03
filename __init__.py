@@ -47,3 +47,7 @@ from .ext_SD12_color_offset import (
     EXT_SD12ColorOffsetGuidanceInvocation,
     SD12ColorOffsetGuidance,
 )
+from .ext_SDXL_color_guidance import (
+    EXT_SDXLColorGuidanceInvocation,
+    SDXLColorGuidance,
+)
