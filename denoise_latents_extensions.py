@@ -224,7 +224,7 @@ class DenoiseExtensionSD12X(ABC):
         """
         Do not modify: Use __post_init__ to handle extension-specific parameters
         During injection calls, extensions will be called in order of self.priority (ascending)
-        self.denoise_latents_data exists in case you need to access the data from calling node
+        self.input_data exists in case you need to access the original data from the calling node
         """
         self.extension_type = extension_type
         self.input_data = input_data
@@ -255,18 +255,20 @@ class DenoiseExtensionSD12X(ABC):
     @abstractmethod
     def list_modifies(self) -> dict[str, Callable]:
         """
-        A list of all the modify methods that this extension provides.
-        e.g. ['modify_latents_before_scaling', 'modify_latents_before_noise_prediction']
-        The injection names must match the method names in this class.
+        A dict of all the modify methods that this extension provides.
+        e.g. {'modify_latents_before_scaling': self.modify_latents_before_scaling,...}
+        It is recommended that the injection names match the method names in this class.
+        The list is accessed dynamically if you want to change the called function mid-process.
         """
         return {}
     
     @abstractmethod
     def list_swaps(self) -> dict[str, Callable]:
         """
-        A list of all the swap methods that this extension provides.
-        e.g. ['swap_latents', 'swap_noise']
-        The injection names must match the method names in this class.
+        A dict of all the swap methods that this extension provides.
+        e.g. ['swap_do_unet_step': self.swap_do_unet_step,...]
+        It is recommended that the injection names match the method names in this class.
+        This should remain static since the handler might break if the structure changes too much.
         """
         return {}
     
