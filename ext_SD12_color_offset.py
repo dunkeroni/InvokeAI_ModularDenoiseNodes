@@ -1,3 +1,8 @@
+####################################################################################################
+# SD1 Color Guidance
+# From: https://github.com/Haoming02/sd-webui-vectorscope-cc
+####################################################################################################
+
 from .denoise_latents_extensions import DenoiseExtensionSD12X, DenoiseLatentsData, guidance_extension_12X
 import torch
 from typing import Callable, Any, Literal

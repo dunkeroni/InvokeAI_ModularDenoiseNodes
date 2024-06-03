@@ -1,3 +1,8 @@
+####################################################################################################
+# SDXL Color Guidance
+# From: https://huggingface.co/blog/TimothyAlexisVass/explaining-the-sdxl-latent-space
+####################################################################################################
+
 from .denoise_latents_extensions import DenoiseExtensionSD12X, DenoiseLatentsData, guidance_extension_12X
 from invokeai.backend.util.logging import info, warning, error
 import torch
