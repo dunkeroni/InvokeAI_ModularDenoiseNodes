@@ -43,3 +43,7 @@ from .ext_tiled_denoise import (
     EXT_TiledDenoiseGuidanceInvocation,
     TiledDenoiseGuidance,
 )
+from .ext_SD12_color_offset import (
+    EXT_SD12ColorOffsetGuidanceInvocation,
+    SD12ColorOffsetGuidance,
+)

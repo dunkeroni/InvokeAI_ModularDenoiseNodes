@@ -13,7 +13,7 @@ from .denoise_latents_extensions import (
     GuidanceDataOutput
 )
 
-@guidance_extension_12X("template_unique_name")
+@guidance_extension_12X("template_unique_name") #MUST be the same as the guidance_name in the GuidanceField
 class TemplateGuidance(DenoiseExtensionSD12X):
     """
     This is a template for creating a new guidance extension.
@@ -38,7 +38,8 @@ class EXT_TemplateGuidanceInvocation(BaseInvocation):
     """
     This is a template for the user-facing node that activates a guidance extension.
     """
-    priority: int = InputField(default=500, description="Priority of the guidance module", ui_order=0)
+    priority: int = InputField(default=500, description="Priority of the guidance module", ui_order=0) #REQUIRED
+
     enabled: bool = InputField(default=True, description="Enable the guidance module", ui_order=1) #EXAMPLE
 
     def invoke(self, context: InvocationContext) -> GuidanceDataOutput:
