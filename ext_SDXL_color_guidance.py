@@ -57,7 +57,7 @@ CHANNEL_VALUES = {
     "All Channels": [0, 1, 2, 3],
     "Colors Only": [1, 2],
     "L0: Brightness": [0],
-    "L1: Cyan->Red": [1],
+    "L1: Red->Cyan": [1],
     "L2: Lime->Purple": [2],
     "L3: Structure": [3],
 }
@@ -67,7 +67,7 @@ CHANNEL_VALUES = {
     title="EXT: SDXL Color Guidance",
     tags=["guidance", "extension", "Color", "SDXL"],
     category="guidance",
-    version="1.0.0",
+    version="1.0.1",
 )
 class EXT_SDXLColorGuidanceInvocation(BaseInvocation):
     """

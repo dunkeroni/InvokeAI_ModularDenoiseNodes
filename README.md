@@ -49,6 +49,7 @@ Previously the denoise latents node itself was inherited from the version built 
 | Perp Negative | Need to look into more efficient implementations of this further down in the unet. Also might be cool to use it for regional guidance. |
 | Regional Guidance | Exists in a more elegant form in standard Invoke now. |
 | Color Gravitation | It was hard to control and the results were never great. Style-Only IP Adapters are a more reliable way to set color palettes. Might revisit if I can find a cleaner implementation. |
+| Multidiffusion | Has been combined into Tiled Denoise. They are the same code, but MD has random jitter in the tile placements. This is now a boolean option. |
 
 
 ## Examples:
