@@ -9,3 +9,5 @@ from .ext_sigma_scaling import EXT_SigmaGuidanceInvocation
 from .ext_tiled_denoise import EXT_TiledDenoiseGuidanceInvocation
 from .ext_SD12_color_offset import EXT_SD12ColorOffsetGuidanceInvocation
 from .ext_SDXL_color_guidance import EXT_SDXLColorGuidanceInvocation
+#from .ext_HiDiffusion import EXT_HiDiffusionGuidanceInvocation
+from .ext_CFGpp import EXT_CFGppGuidanceInvocation
