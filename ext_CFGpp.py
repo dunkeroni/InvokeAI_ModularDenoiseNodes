@@ -1,7 +1,10 @@
+####################################################################################################
+# CFG++
+# From: https://arxiv.org/pdf/2406.08070 https://github.com/CFGpp-diffusion/CFGpp
+####################################################################################################
 from .denoise_latents_extensions import DenoiseExtensionSD12X, DenoiseLatentsData, guidance_extension_12X
 from invokeai.backend.util.logging import info, warning, error
 import torch
-from collections import OrderedDict
 from diffusers.schedulers.scheduling_utils import SchedulerOutput
 from typing import Callable, Any
 from invokeai.invocation_api import (
