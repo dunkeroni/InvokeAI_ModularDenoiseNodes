@@ -97,7 +97,7 @@ class EXT_CFGppGuidanceInvocation(BaseInvocation):
     """
     priority: int = InputField(default=500, description="Priority of the guidance module", ui_order=0) #REQUIRED
 
-    cfg_guidance: float = InputField(default=0.8, description="CFG++ guidance value", title="CFG++", ge=0, le=1, ui_order=1)
+    cfg_guidance: float = InputField(default=0.8, description="CFG++ guidance value", title="CFG++", ge=0, ui_order=1)
 
     def invoke(self, context: InvocationContext) -> GuidanceDataOutput:
 
