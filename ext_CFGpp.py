@@ -32,8 +32,9 @@ class CFGppGuidance(DenoiseExtensionSD12X):
             "swap_combine_noise": self.swap_combine_noise,
             }
     
-    def __post_init__(self, cfg_guidance: float):
+    def __post_init__(self, cfg_guidance: float, skip_final_step: bool):
         self.cfg_guidance = cfg_guidance
+        self.skip_final_step = skip_final_step
 
     def modify_data_before_denoising(self, data: DenoiseLatentsData):
         self.dataclone = data.copy() # save a copy of the data for later use
@@ -41,6 +42,7 @@ class CFGppGuidance(DenoiseExtensionSD12X):
         pass
     
     def alpha(self, t):
+        t = int(t)
         at = self.scheduler.alphas_cumprod[t] if t >= 0 else self.final_alpha_cumprod
         return at
 
@@ -69,10 +71,12 @@ class CFGppGuidance(DenoiseExtensionSD12X):
         zt = latents
         at = self.alpha(timestep)
         timestep_index = self.scheduler.timesteps.eq(timestep).nonzero().item()
-        if timestep > 1:
+        if timestep > self.scheduler.timesteps[-1]:
             timestep_next = self.scheduler.timesteps[timestep_index + 1]
         else:
             timestep_next = self.scheduler.timesteps[-1]
+            if self.skip_final_step:
+                return default(noise_pred, timestep, latents, **scheduler_step_kwargs)
         at_next = self.alpha(timestep_next) 
 
         # tweedie
@@ -89,7 +93,7 @@ class CFGppGuidance(DenoiseExtensionSD12X):
     title="EXT: CFG++",
     tags=["guidance", "extension", "CFG++"],
     category="guidance",
-    version="1.0.0",
+    version="1.1.0",
 )
 class EXT_CFGppGuidanceInvocation(BaseInvocation):
     """
@@ -98,11 +102,13 @@ class EXT_CFGppGuidanceInvocation(BaseInvocation):
     priority: int = InputField(default=500, description="Priority of the guidance module", ui_order=0) #REQUIRED
 
     cfg_guidance: float = InputField(default=0.8, description="CFG++ guidance value", title="CFG++", ge=0, ui_order=1)
+    skip_final_step: bool = InputField(default=False, description="Skip the final step", title="Skip final step", ui_order=2)
 
     def invoke(self, context: InvocationContext) -> GuidanceDataOutput:
 
         kwargs = dict(
             cfg_guidance=self.cfg_guidance,
+            skip_final_step=self.skip_final_step,
         )
 
         return GuidanceDataOutput(
