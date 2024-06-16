@@ -100,7 +100,7 @@ class DenoiseLatentsData:
             noise=self.noise.clone() if self.noise is not None else None,
             latents=self.latents.clone() if self.latents is not None else None,
             scaled_model_inputs=self.scaled_model_inputs.clone() if self.scaled_model_inputs is not None else None,
-            timesteps=self.timesteps.copy(),
+            timesteps=self.timesteps.copy() if type(self.timesteps) is list else self.timesteps.clone(),
             init_timestep=self.init_timestep,
             step_index=self.step_index,
             num_inference_steps=self.num_inference_steps,
@@ -177,7 +177,7 @@ class ExtensionHandlerSD12X:
     def call_patches(self, unet_model: UNet2DConditionModel):
         """Call all the patch_model methods in order of priority"""
         for extension in self.extensions:
-            extension.patch_model(unet_model=unet_model)
+            next(extension.patch_model(unet_model=unet_model))
         return self # required for the with block
     
     def __enter__(self):
@@ -200,16 +200,16 @@ class ExtensionHandlerSD12X:
             else:
                 raise ValueError(f"Method {method} does not relate to a callable in extension {extension.extension_type} list_modifies()")
     
-    def call_swap(self, method: str, default: Callable, **kwargs) -> DenoiseLatentsData:
+    def call_swap(self, method: str, default: Callable, *args, **kwargs) -> DenoiseLatentsData:
         """Call the swap method if it exists, otherwise return the default function"""
         if method in self.swaps:
             swap: Callable = self.swaps[method].list_swaps()[method]
             if callable(swap):
-                return swap(default=default, **kwargs)
+                return swap(default, *args, **kwargs)
             else:
                 raise ValueError(f"Method {method} does not relate to a callable in extension {self.swaps[method].extension_type} list_swaps()")
         else:
-            return default(**kwargs)
+            return default(*args, **kwargs)
     
     def enter_contexts(self, exit_stack: ExitStack):
         """Enter the context of each extension"""
@@ -371,4 +371,15 @@ class DenoiseExtensionSD12X(ABC):
             mid_block_additional_residual,
             down_intrablock_additional_residuals
         )
+
+    def swap_scheduler_step(
+            self,
+            default: Callable,
+            noise_pred: torch.Tensor,
+            timestep: torch.Tensor,
+            latents: torch.Tensor,
+            **scheduler_step_kwargs: dict[str, Any]
+        ) -> torch.Tensor:
+        """Step the scheduler, return the step_output"""
+        return default(noise_pred, timestep, latents, **scheduler_step_kwargs)
         

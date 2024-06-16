@@ -244,7 +244,7 @@ class ExtendableStableDiffusionGeneratorPipeline(StableDiffusionGeneratorPipelin
 
         uc_noise_pred, c_noise_pred = extension_handler.call_swap(
             "swap_do_unet_step",
-            default=self.invokeai_diffuser.do_unet_step,
+            self.invokeai_diffuser.do_unet_step,
             sample=data.scaled_model_inputs,
             timestep=t,  # TODO: debug how handled batched and non batched timesteps
             step_index=data.step_index,
@@ -262,26 +262,23 @@ class ExtendableStableDiffusionGeneratorPipeline(StableDiffusionGeneratorPipelin
 
         noise_pred = extension_handler.call_swap(
             "swap_combine_noise",
-            default=self.invokeai_diffuser._combine,
+            self.invokeai_diffuser._combine,
             unconditioned_next_x=uc_noise_pred,
             conditioned_next_x=c_noise_pred,
             guidance_scale=guidance_scale
         )
 
         # compute the previous noisy sample x_t -> x_t-1
-        step_output = self.scheduler.step(noise_pred, timestep, data.latents, **data.scheduler_step_kwargs)
+        step_output = extension_handler.call_swap(
+            "swap_scheduler_step",
+            self.scheduler.step,
+            noise_pred,
+            timestep,
+            data.latents,
+            **data.scheduler_step_kwargs
+        )
 
         return step_output
-
-    @staticmethod
-    def _rescale_cfg(total_noise_pred, pos_noise_pred, multiplier=0.7):
-        """Implementation of Algorithm 2 from https://arxiv.org/pdf/2305.08891.pdf."""
-        ro_pos = torch.std(pos_noise_pred, dim=(1, 2, 3), keepdim=True)
-        ro_cfg = torch.std(total_noise_pred, dim=(1, 2, 3), keepdim=True)
-
-        x_rescaled = total_noise_pred * (ro_pos / ro_cfg)
-        x_final = multiplier * x_rescaled + (1.0 - multiplier) * total_noise_pred
-        return x_final
 
     def _unet_forward(
         self,
