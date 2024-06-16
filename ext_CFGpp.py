@@ -102,7 +102,7 @@ class EXT_CFGppGuidanceInvocation(BaseInvocation):
     priority: int = InputField(default=500, description="Priority of the guidance module", ui_order=0) #REQUIRED
 
     cfg_guidance: float = InputField(default=0.8, description="CFG++ guidance value", title="CFG++", ge=0, ui_order=1)
-    skip_final_step: bool = InputField(default=False, description="Skip the final step", title="Skip final step", ui_order=2)
+    skip_final_step: bool = InputField(default=True, description="Skip the final step", title="Skip final step", ui_order=2)
 
     def invoke(self, context: InvocationContext) -> GuidanceDataOutput:
 
