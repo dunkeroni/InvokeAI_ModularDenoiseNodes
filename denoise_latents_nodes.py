@@ -595,8 +595,11 @@ class ModularDenoiseLatentsInvocation(BaseInvocation):
             # all bits flipped. I don't know the original rationale for this, but now we must keep it like this for
             # reproducibility.
             scheduler_step_kwargs.update({"generator": torch.Generator(device=device).manual_seed(seed ^ 0xFFFFFFFF)})
-        if isinstance(scheduler, TCDScheduler):
+        
+        if "eta" in scheduler_step_signature.parameters:
             scheduler_step_kwargs.update({"eta": 1.0})
+        # if isinstance(scheduler, TCDScheduler):
+        #     scheduler_step_kwargs.update({"eta": 1.0})
 
         return num_inference_steps, timesteps, init_timestep, scheduler_step_kwargs
 

@@ -6,7 +6,7 @@ from .denoise_latents_extensions import DenoiseExtensionSD12X, DenoiseLatentsDat
 from invokeai.backend.util.logging import info, warning, error
 import torch
 from diffusers.schedulers.scheduling_utils import SchedulerOutput
-from typing import Callable, Any
+from typing import Callable, Any, Union
 from invokeai.invocation_api import (
     invocation,
     BaseInvocation,
@@ -54,8 +54,16 @@ class CFGppGuidance(DenoiseExtensionSD12X):
             guidance_scale: float,
         ) -> torch.Tensor:
         """I'm sad that I have to do this, but I need to save the unconditional noise for the next swap."""
+        if isinstance(self.cfg_guidance, list):
+            # we don't have access to the step index in this swap yet, so keep grabbing off the top until it's empty
+            if len(self.cfg_guidance) > 1:
+                guidance = self.cfg_guidance.pop(0)
+            else:
+                guidance = self.cfg_guidance[0]
+        else:
+            guidance = self.cfg_guidance
         self.noise_uc = unconditioned_next_x
-        return default(unconditioned_next_x, conditioned_next_x, self.cfg_guidance)
+        return default(unconditioned_next_x, conditioned_next_x, guidance)
 
 
     def swap_scheduler_step(
@@ -93,7 +101,7 @@ class CFGppGuidance(DenoiseExtensionSD12X):
     title="EXT: CFG++",
     tags=["guidance", "extension", "CFG++"],
     category="guidance",
-    version="1.1.0",
+    version="1.2.0",
 )
 class EXT_CFGppGuidanceInvocation(BaseInvocation):
     """
@@ -101,7 +109,7 @@ class EXT_CFGppGuidanceInvocation(BaseInvocation):
     """
     priority: int = InputField(default=500, description="Priority of the guidance module", ui_order=0) #REQUIRED
 
-    cfg_guidance: float = InputField(default=0.8, description="CFG++ guidance value", title="CFG++", ge=0, ui_order=1)
+    cfg_guidance: Union[float, list[float]] = InputField(default=0.8, description="CFG++ guidance value", title="CFG++", ui_order=1)
     skip_final_step: bool = InputField(default=True, description="Skip the final step", title="Skip final step", ui_order=2)
 
     def invoke(self, context: InvocationContext) -> GuidanceDataOutput:

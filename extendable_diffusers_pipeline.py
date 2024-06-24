@@ -20,6 +20,7 @@ from diffusers.schedulers import KarrasDiffusionSchedulers
 from transformers import CLIPFeatureExtractor, CLIPTextModel, CLIPTokenizer
 
 from invokeai.backend.stable_diffusion.diffusion.shared_invokeai_diffusion import InvokeAIDiffuserComponent
+from invokeai.backend.util.logging import info, warning, error
 
 class ExtendableStableDiffusionGeneratorPipeline(StableDiffusionGeneratorPipeline):
     r"""
