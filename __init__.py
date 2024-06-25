@@ -11,3 +11,4 @@ from .ext_SD12_color_offset import EXT_SD12ColorOffsetGuidanceInvocation
 from .ext_SDXL_color_guidance import EXT_SDXLColorGuidanceInvocation
 #from .ext_HiDiffusion import EXT_HiDiffusionGuidanceInvocation
 from .ext_CFGpp import EXT_CFGppGuidanceInvocation
+from .ext_DDIM_eta import EXT_DDIMetaGuidanceInvocation
