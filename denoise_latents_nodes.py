@@ -12,7 +12,7 @@ from diffusers.schedulers.scheduling_utils import SchedulerMixin as Scheduler
 from pydantic import field_validator
 from transformers import CLIPVisionModelWithProjection
 from invokeai.backend.model_manager import BaseModelType
-from invokeai.app.invocations.constants import LATENT_SCALE_FACTOR, SCHEDULER_NAME_VALUES
+from invokeai.app.invocations.constants import LATENT_SCALE_FACTOR
 from invokeai.app.invocations.fields import (
     ConditioningField,
     FieldDescriptions,
@@ -47,12 +47,12 @@ from invokeai.backend.stable_diffusion.diffusers_pipeline import (
     T2IAdapterData,
 )
 from .extendable_diffusers_pipeline import ExtendableStableDiffusionGeneratorPipeline
-from invokeai.backend.stable_diffusion.schedulers import SCHEDULER_MAP
+from invokeai.backend.stable_diffusion.schedulers.schedulers import SCHEDULER_NAME_VALUES
 from invokeai.backend.util.devices import TorchDevice
 from invokeai.invocation_api import BaseInvocation, invocation
 from invokeai.app.invocations.controlnet_image_processors import ControlField
 from invokeai.invocation_api import UNetField
-from invokeai.app.invocations.latent import get_scheduler
+from invokeai.app.invocations.denoise_latents import get_scheduler
 
 DEFAULT_PRECISION = TorchDevice.choose_torch_dtype()
 
