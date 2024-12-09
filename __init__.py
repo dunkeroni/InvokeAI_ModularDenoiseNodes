@@ -1,14 +1,4 @@
 from .analyse_latents import AnalyzeLatentsInvocation #extra for testing
-
-from .denoise_latents_nodes import (
-    ModularDenoiseLatentsInvocation,
-)
-from .ext_mask_guidance import EXT_GradientMaskInvocation
-from .ext_cfg_rescale import EXT_CFGRescaleGuidanceInvocation
-from .ext_sigma_scaling import EXT_SigmaGuidanceInvocation
-from .ext_tiled_denoise import EXT_TiledDenoiseGuidanceInvocation
-from .ext_SD12_color_offset import EXT_SD12ColorOffsetGuidanceInvocation
-from .ext_SDXL_color_guidance import EXT_SDXLColorGuidanceInvocation
-#from .ext_HiDiffusion import EXT_HiDiffusionGuidanceInvocation
-from .ext_CFGpp import EXT_CFGppGuidanceInvocation
-from .ext_DDIM_eta import EXT_DDIMetaGuidanceInvocation
+from .exposed_denoise_latents import ExposedDenoiseLatentsInvocation
+from .gradient_mask_extensions import GradientMaskExtensionInvocation
+from .fam_extensions import FAM_FM_ExtensionInvocation
