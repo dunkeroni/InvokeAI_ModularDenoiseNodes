@@ -1,13 +1,15 @@
+##########################################################################################################################
+# From: https://arxiv.org/pdf/2411.18552v1
+# Title: FAM Diffusion: Frequency and Attention Modulation for High-Resolution Image Generation with Stable Diffusion
+##########################################################################################################################
+
 from invokeai.app.invocations.baseinvocation import BaseInvocation, invocation
 from invokeai.app.services.shared.invocation_context import InvocationContext
 from invokeai.app.invocations.fields import (
     InputField,
     LatentsField,
-    ImageField,
 )
-from invokeai.invocation_api import (
-    ImageOutput,
-)
+
 import torch
 from .extension_classes import GuidanceField, base_guidance_extension, GuidanceDataOutput
 from invokeai.backend.stable_diffusion.extensions.base import ExtensionBase, callback
@@ -16,8 +18,6 @@ from invokeai.backend.stable_diffusion.denoise_context import DenoiseContext
 from invokeai.backend.util.logging import info, warning, error
 import random
 import einops
-from PIL import Image
-import numpy as np
 
 @base_guidance_extension("FAM_FM")
 class FAM_FM_Guidance(ExtensionBase):
@@ -53,13 +53,10 @@ class FAM_FM_Guidance(ExtensionBase):
         K_t = torch.ones_like(self.initial_latents).to(ctx.latents.device)
         
         rho = ctx.timestep.item() / ctx.scheduler.config.num_train_timesteps
-        print(f"rho: {rho}")
         h_i = self.initial_latents.shape[-2]
         w_i = self.initial_latents.shape[-1]
         tau_h = h_i * self.c * (1 - rho)
         tau_w = w_i * self.c * (1 - rho)
-        print(f"tau_h: {tau_h}, tau_w: {tau_w}")
-        print(f"h_i: {h_i}, w_i: {w_i}")
 
         h_d = latents.shape[-2]
         w_d = latents.shape[-1]
@@ -67,7 +64,7 @@ class FAM_FM_Guidance(ExtensionBase):
         # create a high-pass filter on the shifted domain
         # in horizontal dimension: K_t = rho if |X - Xc| < tau_w/2 else 1
         # in vertical dimension: K_t = rho if |Y - Yc| < tau_h/2 else 1
-        K_t[:, :, int((h_i // 2) - (tau_h // 2)): int((h_i // 2) + (tau_h // 2)), int((w_i // 2) - (tau_w // 2)): int((w_i // 2) + (tau_w // 2))] = 1 - rho
+        K_t[:, :, int((h_i // 2) - (tau_h // 2)): int((h_i // 2) + (tau_h // 2)), int((w_i // 2) - (tau_w // 2)): int((w_i // 2) + (tau_w // 2))] = 1 - rho #paper formulas are wrong, missing 1-
 
         lf_part = skip_residual_fft * (1 - K_t)
 
