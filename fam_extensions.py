@@ -3,6 +3,10 @@ from invokeai.app.services.shared.invocation_context import InvocationContext
 from invokeai.app.invocations.fields import (
     InputField,
     LatentsField,
+    ImageField,
+)
+from invokeai.invocation_api import (
+    ImageOutput,
 )
 import torch
 from .extension_classes import GuidanceField, base_guidance_extension, GuidanceDataOutput
@@ -12,6 +16,8 @@ from invokeai.backend.stable_diffusion.denoise_context import DenoiseContext
 from invokeai.backend.util.logging import info, warning, error
 import random
 import einops
+from PIL import Image
+import numpy as np
 
 @base_guidance_extension("FAM_FM")
 class FAM_FM_Guidance(ExtensionBase):
@@ -34,36 +40,48 @@ class FAM_FM_Guidance(ExtensionBase):
     @callback(ExtensionCallbackType.PRE_STEP)
     @torch.no_grad()
     def pre_step(self, ctx: DenoiseContext):
-        
         t = ctx.timestep
         if t.dim() == 0:
             # some schedulers expect t to be one-dimensional.
             # TODO: file diffusers bug about inconsistency?
             t = einops.repeat(t, "-> batch", batch=ctx.latents.size(0))
         
-        latents = ctx.latents.clone().float()
-        latents_fft = torch.fft.fftshift(torch.fft.fft2(latents, s=None, dim=(-2, -1), norm=None))
-        skip_residual = ctx.scheduler.add_noise(self.initial_latents, self.noise.to(self.initial_latents.device), t).float()
-        skip_residual_fft = torch.fft.fftshift(torch.fft.fft2(skip_residual, s=None, dim=(-2, -1), norm=None).to(ctx.latents.device))
-        K_t = torch.ones_like(latents).to(ctx.latents.device)
+        latents = ctx.latents.clone().double()
+        latents_fft = torch.fft.fftshift(torch.fft.fft2(latents, s=None, dim=(-2, -1), norm="ortho"))
+        skip_residual = ctx.scheduler.add_noise(self.initial_latents, self.noise.to(self.initial_latents.device), t).double()
+        skip_residual_fft = torch.fft.fftshift(torch.fft.fft2(skip_residual, s=None, dim=(-2, -1), norm="ortho").to(ctx.latents.device))
+        K_t = torch.ones_like(self.initial_latents).to(ctx.latents.device)
         
-        rho = (ctx.timestep.item()) / ctx.scheduler.config.num_train_timesteps
+        rho = ctx.timestep.item() / ctx.scheduler.config.num_train_timesteps
         print(f"rho: {rho}")
-        h = latents.shape[-2]
-        w = latents.shape[-1]
-        tau_h = h * self.c * (1 - rho)
-        tau_w = w * self.c * (1 - rho)
+        h_i = self.initial_latents.shape[-2]
+        w_i = self.initial_latents.shape[-1]
+        tau_h = h_i * self.c * (1 - rho)
+        tau_w = w_i * self.c * (1 - rho)
+        print(f"tau_h: {tau_h}, tau_w: {tau_w}")
+        print(f"h_i: {h_i}, w_i: {w_i}")
+
+        h_d = latents.shape[-2]
+        w_d = latents.shape[-1]
 
         # create a high-pass filter on the shifted domain
         # in horizontal dimension: K_t = rho if |X - Xc| < tau_w/2 else 1
         # in vertical dimension: K_t = rho if |Y - Yc| < tau_h/2 else 1
-        K_t[:, :, int((h // 2) - (tau_h // 2)): int((h // 2) + (tau_h // 2)), int((w // 2) - (tau_w // 2)): int((w // 2) + (tau_w // 2))] = rho
+        K_t[:, :, int((h_i // 2) - (tau_h // 2)): int((h_i // 2) + (tau_h // 2)), int((w_i // 2) - (tau_w // 2)): int((w_i // 2) + (tau_w // 2))] = 1 - rho
+
+        lf_part = skip_residual_fft * (1 - K_t)
+
+        # pad the low frequency part equally in both directions with zeros
+        pad_h = h_d - h_i
+        pad_w = w_d - w_i
+        lf_part = torch.nn.functional.pad(lf_part, (pad_w // 2, pad_w - pad_w // 2, pad_h // 2, pad_h - pad_h // 2), mode='constant', value=0)
+        K_t_padded = torch.nn.functional.pad(K_t, (pad_w // 2, pad_w - pad_w // 2, pad_h // 2, pad_h - pad_h // 2), mode='constant', value=1)
 
         #combine the low frequency components of the skip residual with the high frequency components of the latent image
-        latents_fft = latents_fft * K_t + skip_residual_fft * (1 - K_t)
+        latents_fft = latents_fft * K_t_padded + lf_part
 
         #invert the FFT to get the new latent image
-        ctx.latents = torch.fft.ifft2(torch.fft.ifftshift(latents_fft), s=None, dim=(-2, -1), norm=None).real.half()
+        ctx.latents = torch.fft.ifft2(torch.fft.ifftshift(latents_fft), s=None, dim=(-2, -1), norm="ortho").real.half()
 
 
 @invocation(
@@ -99,5 +117,4 @@ class FAM_FM_ExtensionInvocation(BaseInvocation):
                 extension_kwargs=kwargs
             )
         )
-
 
