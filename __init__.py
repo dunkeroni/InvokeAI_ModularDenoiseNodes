@@ -1,4 +1,4 @@
 from .analyse_latents import AnalyzeLatentsInvocation #extra for testing
 from .exposed_denoise_latents import ExposedDenoiseLatentsInvocation
 from .gradient_mask_extensions import GradientMaskExtensionInvocation
-from .fam_extensions import FAM_FM_ExtensionInvocation
+from .fam_extensions import FAM_FM_ExtensionInvocation, FAM_AM_ExtensionInvocation

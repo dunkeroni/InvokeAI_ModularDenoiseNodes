@@ -224,6 +224,7 @@ class ExposedDenoiseLatentsInvocation(DenoiseLatentsInvocation):
             ):
                 sd_backend = StableDiffusionBackend(unet, scheduler)
                 denoise_ctx.unet = unet
+                denoise_ctx.sd_backend = sd_backend # required for forced calls from extensions. Can this be done another way?
                 result_latents = sd_backend.latents_from_embeddings(denoise_ctx, ext_manager)
 
         # https://discuss.huggingface.co/t/memory-usage-by-later-pipeline-stages/23699

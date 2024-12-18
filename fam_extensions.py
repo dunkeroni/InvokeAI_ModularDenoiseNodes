@@ -18,6 +18,12 @@ from invokeai.backend.stable_diffusion.denoise_context import DenoiseContext
 from invokeai.backend.util.logging import info, warning, error
 import random
 import einops
+from diffusers import UNet2DConditionModel
+from typing import Type, Any
+from .attention_modulation import StoreAttentionModulation
+from invokeai.backend.stable_diffusion.extensions_manager import ExtensionsManager
+from invokeai.backend.stable_diffusion.diffusion.conditioning_data import ConditioningMode
+
 
 @base_guidance_extension("FAM_FM")
 class FAM_FM_Guidance(ExtensionBase):
@@ -42,8 +48,6 @@ class FAM_FM_Guidance(ExtensionBase):
     def pre_step(self, ctx: DenoiseContext):
         t = ctx.timestep
         if t.dim() == 0:
-            # some schedulers expect t to be one-dimensional.
-            # TODO: file diffusers bug about inconsistency?
             t = einops.repeat(t, "-> batch", batch=ctx.latents.size(0))
         
         latents = ctx.latents.clone().double()
@@ -115,3 +119,135 @@ class FAM_FM_ExtensionInvocation(BaseInvocation):
             )
         )
 
+
+
+def patch_unet_attention_processor(unet: UNet2DConditionModel, processor_cls: Type[Any]):
+    """A context manager that patches `unet` with the provided attention processor.
+
+    Args:
+        unet (UNet2DConditionModel): The UNet model to patch.
+        processor (Type[Any]): Class which will be initialized for each key and passed to set_attn_processor(...).
+    """
+    unet_orig_processors = unet.attn_processors
+
+    # create separate instance for each attention, to be able modify each attention separately
+    unet_new_processors = {key: processor_cls() for key in unet_orig_processors.keys()}
+    try:
+        unet.set_attn_processor(unet_new_processors)
+        yield None
+
+    finally:
+        unet.set_attn_processor(unet_orig_processors)
+
+
+@base_guidance_extension("FAM_AM")
+class FAM_AM_Guidance(ExtensionBase):
+    def __init__(
+        self,
+        context: InvocationContext,
+        l: float,
+        latent_image_name: str,
+    ):
+        self.l = l
+        self.initial_latents = context.tensors.load(latent_image_name)
+        self.noise = torch.randn(
+            self.initial_latents.shape,
+            dtype=torch.float32,
+            device="cpu",
+            generator=torch.Generator(device="cpu").manual_seed(random.randint(0, 2 ** 32 - 1)),
+        ).to(device=self.initial_latents.device, dtype=self.initial_latents.dtype)
+        self.dummy_manager = ExtensionsManager()
+        super().__init__()
+
+    def is_custom_attention(self, key) -> bool:
+        """ IMPORTANT:
+            The custom attention is SLOW and FAT.
+            Setting all processors to use the custom attention makes the process take 2x longer
+            It also requires an extra 12GB of GPU memory at SDXL 1024x1024 resolution just to hold coppies of the attention weights.
+            The paper specifies that they only use it for the up_blocks, and that the most significant effect is up_block_0.
+            There 140 processors in the SDXL unet, with 20 in up_blocks.0 and 12 in up_blocks.1 (32 total).
+            A huge ammount of the VRAM and most of the time disparity is coming from up_blocks.1 (hidden states shape [2, 10, 4096, 64] vs [2, 20, 1024, 64])
+        """
+        #key is in form 'up_blocks.0.attentions.2.transformer_blocks.0.attn1.processor'
+        blocks = key.split('.')
+        if blocks[0] == 'up_blocks':
+            if (blocks[1] == "0" and blocks[3] == "2"):# or blocks[1] == "1":
+                print(f"Custom attention for {key}")
+                return True
+
+
+    
+
+    @callback(ExtensionCallbackType.PRE_DENOISE_LOOP)
+    def pre_denoise_loop(self, ctx: DenoiseContext):
+        unet_replacement_processors = {}
+        self.unet_new_processors = []
+
+        for key in ctx.unet.attn_processors.keys():
+            if self.is_custom_attention(key):
+                unet_replacement_processors[key] = StoreAttentionModulation(self.l)
+                self.unet_new_processors.append(unet_replacement_processors[key])
+            else:
+                unet_replacement_processors[key] = ctx.unet.attn_processors[key]
+
+        ctx.unet.set_attn_processor(unet_replacement_processors)
+
+
+    
+    @callback(ExtensionCallbackType.PRE_STEP)
+    @torch.no_grad()
+    def pre_step(self, ctx: DenoiseContext):
+        t = ctx.timestep
+        if t.dim() == 0:
+            t = einops.repeat(t, "-> batch", batch=ctx.latents.size(0))
+        self.stored_latents = ctx.latents.clone()
+        ctx.latents = ctx.scheduler.add_noise(self.initial_latents.to(ctx.latents.device), self.noise.to(ctx.latents.device), t)
+        ctx.latent_model_input = ctx.scheduler.scale_model_input(ctx.latents, ctx.timestep)
+
+        #set all the processors to store the attention weights
+        for attn_processor in self.unet_new_processors:
+            attn_processor.store_copy = True
+        
+        #call the unet step to get the attention weights
+        ctx.sd_backend.run_unet(ctx, self.dummy_manager, ConditioningMode.Both)
+
+        #Change back to false, attentions will use the stored maps in the real unet pass
+        for attn_processor in self.unet_new_processors:
+            attn_processor.store_copy = False
+        
+        ctx.latents = self.stored_latents
+        
+
+@invocation(
+    "attention_modulation_extInvocation",
+    title="I2I Preservation (AM) [Extension]",
+    tags=["FAM", "attention", "modulation", "extension"],
+    category="latents",
+    version="1.0.0",
+)
+class FAM_AM_ExtensionInvocation(BaseInvocation):
+    """Preserves low frequency features from an input image."""
+    l: float = InputField(
+        title="l",
+        description="'c' value for the FAM extension. Affects scaling of the cutoff frequency per step.",
+        default=0.5,
+        ge=0.0,
+        le=1.0,
+    )
+    latent_image: LatentsField = InputField(
+        title="Latent Image",
+        description="Latent image to be targeted.",
+    )
+
+    @torch.no_grad()
+    def invoke(self, context: InvocationContext) -> GuidanceDataOutput:
+        kwargs = {
+            "l": self.l,
+            "latent_image_name": self.latent_image.latents_name,
+        }
+        return GuidanceDataOutput(
+            guidance_data_output=GuidanceField(
+                guidance_name="FAM_AM",
+                extension_kwargs=kwargs
+            )
+        )
