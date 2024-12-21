@@ -11,6 +11,7 @@ import math
 
 
 class StoreAttentionModulation(CustomAttnProcessor2_0):
+    @torch.no_grad()
     def __init__(self, l: float, *args, **kwargs):
         self.l = l
         self.store_copy: bool = False
@@ -38,6 +39,7 @@ class StoreAttentionModulation(CustomAttnProcessor2_0):
         if attn_mask is not None:
             attn_weights.add_(attn_mask)
         attn_weights = torch.softmax(attn_weights, dim=-1)
+
         if self.store_copy:
             self.stored_copy = attn_weights.clone()
         else: #tv_resize stored copy to same size as attn_weights using bimodal transform, then lerp based on self.l
@@ -47,6 +49,7 @@ class StoreAttentionModulation(CustomAttnProcessor2_0):
         attn_weights = torch.dropout(attn_weights, dropout_p, train=True)
         return torch.matmul(attn_weights, value)
 
+    @torch.no_grad()
     def __call__(
         self,
         attn: Attention,

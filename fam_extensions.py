@@ -157,6 +157,7 @@ class FAM_AM_Guidance(ExtensionBase):
             generator=torch.Generator(device="cpu").manual_seed(random.randint(0, 2 ** 32 - 1)),
         ).to(device=self.initial_latents.device, dtype=self.initial_latents.dtype)
         self.dummy_manager = ExtensionsManager()
+        self.and_never_again = False
         super().__init__()
 
     def is_custom_attention(self, key) -> bool:
@@ -165,13 +166,12 @@ class FAM_AM_Guidance(ExtensionBase):
             Setting all processors to use the custom attention makes the process take 2x longer
             It also requires an extra 12GB of GPU memory at SDXL 1024x1024 resolution just to hold coppies of the attention weights.
             The paper specifies that they only use it for the up_blocks, and that the most significant effect is up_block_0.
-            There 140 processors in the SDXL unet, with 20 in up_blocks.0 and 12 in up_blocks.1 (32 total).
             A huge ammount of the VRAM and most of the time disparity is coming from up_blocks.1 (hidden states shape [2, 10, 4096, 64] vs [2, 20, 1024, 64])
         """
         #key is in form 'up_blocks.0.attentions.2.transformer_blocks.0.attn1.processor'
         blocks = key.split('.')
         if blocks[0] == 'up_blocks':
-            if (blocks[1] == "0" and blocks[3] == "2"):# or blocks[1] == "1":
+            if (blocks[1] == "0" and blocks[6] == "attn2"):
                 print(f"Custom attention for {key}")
                 return True
 
@@ -180,6 +180,12 @@ class FAM_AM_Guidance(ExtensionBase):
 
     @callback(ExtensionCallbackType.PRE_DENOISE_LOOP)
     def pre_denoise_loop(self, ctx: DenoiseContext):
+
+        #DEBGUG print out the keys of the named modules in the unet
+        for key, obj in enumerate(ctx.unet.named_modules()):
+            print(obj)
+
+
         unet_replacement_processors = {}
         self.unet_new_processors = []
 
@@ -197,11 +203,16 @@ class FAM_AM_Guidance(ExtensionBase):
     @callback(ExtensionCallbackType.PRE_STEP)
     @torch.no_grad()
     def pre_step(self, ctx: DenoiseContext):
+        if self.and_never_again:
+            return
+
+        t_orig = ctx.timestep
+        ctx.timestep = ctx.scheduler.timesteps[-1]
         t = ctx.timestep
         if t.dim() == 0:
             t = einops.repeat(t, "-> batch", batch=ctx.latents.size(0))
         self.stored_latents = ctx.latents.clone()
-        ctx.latents = ctx.scheduler.add_noise(self.initial_latents.to(ctx.latents.device), self.noise.to(ctx.latents.device), t)
+        ctx.latents = self.initial_latents.to(ctx.latents.device) #ctx.scheduler.add_noise(self.initial_latents.to(ctx.latents.device), self.noise.to(ctx.latents.device), t)
         ctx.latent_model_input = ctx.scheduler.scale_model_input(ctx.latents, ctx.timestep)
 
         #set all the processors to store the attention weights
@@ -216,6 +227,14 @@ class FAM_AM_Guidance(ExtensionBase):
             attn_processor.store_copy = False
         
         ctx.latents = self.stored_latents
+        ctx.timestep = t_orig
+        self.and_never_again = True
+    
+    @callback(ExtensionCallbackType.POST_DENOISE_LOOP)
+    def post_denoise_loop(self, ctx: DenoiseContext):
+        for attn_processor in self.unet_new_processors:
+            attn_processor.stored_copy = None
+        torch.cuda.empty_cache()
         
 
 @invocation(
