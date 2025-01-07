@@ -12,43 +12,11 @@ import math
 
 class StoreAttentionModulation(CustomAttnProcessor2_0):
     @torch.no_grad()
-    def __init__(self, l: float, *args, **kwargs):
-        self.l = l
+    def __init__(self, C: float, *args, **kwargs):
+        self.C = C
         self.store_copy: bool = False
+        self.attn_name = ""
         super().__init__(*args, **kwargs)
-    
-    @torch.no_grad()
-    def new_attention(
-        self, query, key, value, is_causal, attn_mask=None, dropout_p=0.0, scale=None
-    ):
-        scale = 1 / math.sqrt(math.sqrt(query.size(-1))) if scale is None else scale
-        query *= scale
-        key *= scale
-        attn_weights = torch.matmul(query, key.transpose(-2, -1))
-        if is_causal:
-            assert attn_mask is None
-            temp_mask = (
-                torch.ones((query.shape[-2], key.shape[-2]), device=query.device)
-                .tril_()
-                .bool()
-            )
-            mask = torch.zeros_like(temp_mask, dtype=query.dtype)
-            mask.masked_fill_(temp_mask.logical_not(), float("-inf"))
-            attn_weights.add_(mask)
-
-        if attn_mask is not None:
-            attn_weights.add_(attn_mask)
-        attn_weights = torch.softmax(attn_weights, dim=-1)
-
-        if self.store_copy:
-            self.stored_copy = attn_weights.clone()
-        else: #tv_resize stored copy to same size as attn_weights using bimodal transform, then lerp based on self.l
-            stored_copy = tv_resize(self.stored_copy, size=attn_weights.shape[-2:], interpolation=2)
-            attn_weights = torch.lerp(attn_weights, stored_copy, self.l)
-        
-        attn_weights = torch.dropout(attn_weights, dropout_p, train=True)
-        print(f"debug: {self.debugname}")
-        return torch.matmul(attn_weights, value)
 
     @torch.no_grad()
     def __call__(
@@ -137,9 +105,20 @@ class StoreAttentionModulation(CustomAttnProcessor2_0):
 
         # the output of sdp = (batch, num_heads, seq_len, head_dim)
         # TODO: add support for attn.scale when we move to Torch 2.1
-        hidden_states = self.new_attention( #F.scaled_dot_product_attention(
+        hidden_states = F.scaled_dot_product_attention(
             query, key, value, attn_mask=attention_mask, dropout_p=0.0, is_causal=False
         )
+
+        if self.store_copy:
+            #self.saved_query = query
+            self.saved_key = key
+            self.saved_value = value
+        else:
+            hidden_states_ref = F.scaled_dot_product_attention(
+                query, self.saved_key, self.saved_value, attn_mask=attention_mask, dropout_p=0.0, is_causal=False
+            )
+            hidden_states = self.C * hidden_states_ref + (1 - self.C)*hidden_states
+
 
         hidden_states = hidden_states.transpose(1, 2).reshape(batch_size, -1, attn.heads * head_dim)
         hidden_states = hidden_states.to(query.dtype)

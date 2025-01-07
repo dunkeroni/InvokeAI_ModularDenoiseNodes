@@ -166,7 +166,7 @@ class FAM_AM_Guidance(ExtensionBase):
             Setting all processors to use the custom attention makes the process take 2x longer
             It also requires an extra 12GB of GPU memory at SDXL 1024x1024 resolution just to hold coppies of the attention weights.
             The paper specifies that they only use it for the up_blocks, and that the most significant effect is up_block_0.
-            A huge ammount of the VRAM and most of the time disparity is coming from up_blocks.1 (hidden states shape [2, 10, 4096, 64] vs [2, 20, 1024, 64])
+            Since there is no published code, it's worth playing around with which ones are activated. Potentially allow a list of string inputs to specify block options.
         """
         #key is in form 'up_blocks.0.attentions.2.transformer_blocks.0.attn1.processor'
         blocks = key.split('.')
@@ -182,17 +182,22 @@ class FAM_AM_Guidance(ExtensionBase):
     def pre_denoise_loop(self, ctx: DenoiseContext):
 
         #DEBGUG print out the keys of the named modules in the unet
-        for key, obj in enumerate(ctx.unet.named_modules()):
-            print(obj)
+        # for key, obj in enumerate(ctx.unet.named_modules()):
+        #     print(obj)
 
 
         unet_replacement_processors = {}
         self.unet_new_processors = []
 
+        for block in ctx.unet.up_blocks:
+            print(f"up_block - {type(block)}")
+
         for key in ctx.unet.attn_processors.keys():
             if self.is_custom_attention(key):
                 unet_replacement_processors[key] = StoreAttentionModulation(self.l)
                 self.unet_new_processors.append(unet_replacement_processors[key])
+                unet_replacement_processors[key].debugname = key
+                print(f"added custom attention for {key}")
             else:
                 unet_replacement_processors[key] = ctx.unet.attn_processors[key]
 
@@ -220,6 +225,7 @@ class FAM_AM_Guidance(ExtensionBase):
             attn_processor.store_copy = True
         
         #call the unet step to get the attention weights
+        print("Running unet with store_copy set to True")
         ctx.sd_backend.run_unet(ctx, self.dummy_manager, ConditioningMode.Both)
 
         #Change back to false, attentions will use the stored maps in the real unet pass
@@ -229,6 +235,7 @@ class FAM_AM_Guidance(ExtensionBase):
         ctx.latents = self.stored_latents
         ctx.timestep = t_orig
         self.and_never_again = True
+        print("Finished pre_step")
     
     @callback(ExtensionCallbackType.POST_DENOISE_LOOP)
     def post_denoise_loop(self, ctx: DenoiseContext):

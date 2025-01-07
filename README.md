@@ -3,6 +3,4 @@ This node pack originally provided injection points in a Denoise Latents Node in
 
 Please Note: I am not the original designer for most of these noise prediction methods. This is the work of talented and knowledgeable people. I am simply porting their discoveries into an architecture that lets me more easily manipulate and experiment with them.  
 
-
-
-First item on the list is FAM Diffusion, starting just with the Frequency Modulation portion.
+IMPORTANT: Many things will be frequently broken in this repo. I will try to keep old code archived somewhere so it can be more easily updated and reintroduced to new versions, but I frequently scrap everything that works and build new things.  
