@@ -19,7 +19,7 @@ The setup for creating that image is straightforward:
 - **C**: This is the strength value for the extension. Usually 0.2-0.4 range. More complex subjects might require higher numbers. A value of 0 will not apply any attention sharing and will create an output identical to the default output. A value of 1 will make your dogs look like they've been in an accident.
 - **Skip Up Block 1**: Enabling this helps prevent the pose/layout of the reference image from strongly affecting the output, at the expense of not matching the reference as well.
 - **Skip Until**: If this value is less than 1 and SUPB1 is enabled, then Up Block 1 will no longer be skipped after that far into the denoise; e.g. a value of 0.50 will re-enable Up Block 1 50% of the way through the process, hopefully to improve quality after the layout has been determined.
-- **Stop At**: End the influence of the extension early. **This actually doesn't work right now**, probably just leave it at 1 unles you have also enabled...
+- **Stop At**: End the influence of the extension early. **This actually doesn't work right now**, probably just leave it at 1 unless you have also enabled...
 - **Once And Only Once**: Instead of computing shared attention every step, only compute it once for the final step (based on Stop At value) and just reuse that over and over again. **Much faster generation time**. Lower quality.  
 
 Enabling **Once And Only Once** seems like it should give terrible results, but it's actually not that bad:
