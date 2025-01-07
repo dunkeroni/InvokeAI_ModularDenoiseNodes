@@ -10,7 +10,6 @@ from invokeai.app.invocations.baseinvocation import BaseInvocation, BaseInvocati
 from invokeai.backend.stable_diffusion.extension_callback_type import ExtensionCallbackType
 from invokeai.backend.stable_diffusion.denoise_context import DenoiseContext
 from invokeai.backend.stable_diffusion.extensions.base import ExtensionBase, callback
-from invokeai.app.invocations.constants import DEFAULT_PRECISION
 from invokeai.app.invocations.fields import (
     DenoiseMaskField,
     FieldDescriptions,
@@ -111,7 +110,7 @@ class GradientMaskExtensionInvocation(BaseInvocation):
     )
     tiled: bool = InputField(default=False, description=FieldDescriptions.tiled, ui_order=8)
     fp32: bool = InputField(
-        default=DEFAULT_PRECISION == torch.float32,
+        default=False,
         description=FieldDescriptions.fp32,
         ui_order=9,
     )
