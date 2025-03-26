@@ -1,0 +1,3 @@
+[submodule "SageAttention"]
+	path = SageAttention
+	url = https://github.com/thu-ml/SageAttention

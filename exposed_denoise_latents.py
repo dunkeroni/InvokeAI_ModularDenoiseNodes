@@ -110,11 +110,15 @@ class ExposedDenoiseLatentsInvocation(DenoiseLatentsInvocation):
             cfg_rescale_multiplier=self.cfg_rescale_multiplier,
         )
 
+        # get the unet's config so that we can pass the base to sd_step_callback()
+        unet_config = context.models.get_config(self.unet.unet.key)
+
         scheduler = get_scheduler(
             context=context,
             scheduler_info=self.unet.scheduler,
             scheduler_name=self.scheduler,
             seed=seed,
+            unet_config=unet_config,
         )
 
         timesteps, init_timestep, scheduler_step_kwargs = self.init_scheduler(

@@ -5,6 +5,7 @@ import torch
 import torchvision.transforms as T
 from PIL import Image, ImageFilter
 from torchvision.transforms.functional import resize as tv_resize
+import einops
 
 from invokeai.app.invocations.baseinvocation import BaseInvocation, BaseInvocationOutput, invocation, invocation_output
 from invokeai.backend.stable_diffusion.extension_callback_type import ExtensionCallbackType
@@ -30,7 +31,7 @@ from torch import Tensor
 from invokeai.app.invocations.constants import LATENT_SCALE_FACTOR
 from invokeai.backend.stable_diffusion.extensions.inpaint import InpaintExt
 
-from .extension_classes import GuidanceField, base_guidance_extension
+from .extension_classes import GuidanceField, base_guidance_extension, GuidanceDataOutput
 
 
 
@@ -68,6 +69,10 @@ class InpaintMaskGuidance(InpaintExt):
         self._mask = tv_resize(self._mask, ctx.latents.shape[-2:], T.InterpolationMode.BILINEAR, antialias=False)
         super().init_tensors(ctx)
 
+        #debug: print out the min and max of each layer in the mask
+        for i in range(4):
+            print(f"Layer {i}: Min: {self._mask[0, i, :, :].min()}, Max: {self._mask[0, i, :, :].max()}")
+        print(f"Mask shape: {self._mask.shape}")
 
 
 @invocation(
@@ -264,3 +269,58 @@ class GradientMaskExtensionInvocation(BaseInvocation):
 #             denoise_mask=DenoiseMaskField(mask_name=mask_name, masked_latents_name=masked_latents_name, gradient=True),
 #             expanded_mask_area=ImageField(image_name=expanded_image_dto.image_name),
 #         )
+
+
+@base_guidance_extension("InpaintChannelMaskGuidance")
+class InpaintChannelMaskGuidance(InpaintMaskGuidance):
+    def __init__(
+        self,
+        context: InvocationContext,
+        mask_name: str,
+        is_gradient_mask: bool,
+        channel_mask: list[float],
+    ):
+        """Initialize InpaintExt.
+        This override is purely to adapt the Invoke internal extension to accept the mask_name as a string.
+        """
+        super(InpaintExt,self).__init__() # skip the super call to the InvokeAI version
+        mask = context.tensors.load(mask_name)
+        for i in range(4):
+            mask[:, i, :, :] = mask[:, i, :, :] * channel_mask[i]
+        self._mask = mask
+        self._is_gradient_mask = is_gradient_mask
+        self._noise: Optional[torch.Tensor] = None
+
+@invocation(
+    "channel_mask_extension",
+    title="Channel Mask [Extension]",
+    tags=["mask", "denoise", "extension"],
+    category="extension",
+    version="1.0.0",
+)
+class GradientChannelMaskExtensionInvocation(BaseInvocation):
+    """Creates mask for denoising model run."""
+
+    width: int = InputField(default=1024, ge=64, multiple_of=8, description="Width of the channel mask", ui_order=10)
+    height: int = InputField(default=1024, ge=64, multiple_of=8, description="Height of the channel mask", ui_order=11)
+    channel_0: bool = InputField(default=True, description="Mask the first channel", ui_order=12)
+    channel_1: bool = InputField(default=True, description="Mask the second channel", ui_order=13)
+    channel_2: bool = InputField(default=False, description="Mask the third channel", ui_order=14)
+    channel_3: bool = InputField(default=False, description="Mask the fourth channel", ui_order=15)
+
+    @torch.no_grad()
+    def invoke(self, context: InvocationContext) -> GuidanceDataOutput:
+        mask_name = context.tensors.save(tensor=torch.ones(1, 4, self.height//8, self.width//8))
+        channel_mask = [float(self.channel_0), float(self.channel_1), float(self.channel_2), float(self.channel_3)]
+        print(channel_mask)
+        kwargs = {
+            "mask_name": mask_name,
+            "is_gradient_mask": False,
+            "channel_mask": channel_mask
+        }
+        return GuidanceDataOutput(
+            guidance_data_output=GuidanceField(
+                guidance_name="InpaintChannelMaskGuidance",
+                extension_kwargs=kwargs
+            )
+        )
