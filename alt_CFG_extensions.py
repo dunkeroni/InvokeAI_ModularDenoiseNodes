@@ -66,13 +66,69 @@ class TangentialDampingCFG(ExtensionBase):
     version="1.0.0",
 )
 class TangentialDampingCFGExtensionInvocation(BaseInvocation):
-    """Creates mask for denoising model run."""
+    """Replaces CFG with TCFG."""
     @torch.no_grad()
     def invoke(self, context: InvocationContext) -> GuidanceDataOutput:
         kwargs = {}
         return GuidanceDataOutput(
             guidance_data_output=GuidanceField(
                 guidance_name="TCFG",
+                extension_kwargs=kwargs
+            )
+        )
+
+
+@base_guidance_extension("MCG")
+class ManualCG(ExtensionBase):
+    def __init__(
+        self,
+        context: InvocationContext,
+        positive_guidance: float,
+        negative_guidance: float,
+    ):
+        super().__init__()
+        self.positive_guidance = positive_guidance
+        self.negative_guidance = negative_guidance
+
+    @callback(ExtensionCallbackType.POST_COMBINE_NOISE_PREDS)
+    def manual_CG(self, ctx: DenoiseContext):
+
+        guidance_scale = ctx.inputs.conditioning_data.guidance_scale
+        if isinstance(guidance_scale, list):
+            guidance_scale = guidance_scale[ctx.step_index]
+        
+        ctx.noise_pred = self.positive_guidance * ctx.positive_noise_pred - self.negative_guidance * ctx.negative_noise_pred
+
+
+@invocation(
+    "manual_CG",
+    title="MCG [Extension]",
+    tags=["MCG", "CFG", "manual", "extension"],
+    category="extension",
+    version="1.0.0",
+)
+class ManualCGExtensionInvocation(BaseInvocation):
+    """Replaces CFG with MCG."""
+    positive_guidance: float = InputField(
+        title="Positive Guidance",
+        description="Positive guidance value",
+        default=7
+    )
+    negative_guidance: float = InputField(
+        title="Negative Guidance",
+        description="Negative guidance value",
+        default=6
+    )
+
+    @torch.no_grad()
+    def invoke(self, context: InvocationContext) -> GuidanceDataOutput:
+        kwargs = {
+            "positive_guidance": self.positive_guidance,
+            "negative_guidance": self.negative_guidance
+        }
+        return GuidanceDataOutput(
+            guidance_data_output=GuidanceField(
+                guidance_name="MCG",
                 extension_kwargs=kwargs
             )
         )

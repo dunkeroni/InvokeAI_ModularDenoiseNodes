@@ -24,3 +24,9 @@ The setup for creating that image is straightforward:
 
 Enabling **Once And Only Once** seems like it should give terrible results, but it's actually not that bad:
 ![alt text](img/refDrop_chihuahua_OAOO.png)
+
+## TCFG - Like regular CFG, only lower!
+Tangential Damping Classifier-free Guidance comes from this paper: https://arxiv.org/pdf/2503.18137  
+It claims to prevent results from going off-manifold from an improper direction from the unconditional vs conditional noise prediction. When compared directly against CFG, it often makes results that look less contrasty and may have fewer artifacts. On careful analysis, however, it makes images that are identical to just using a lower CFG value and does not compare favorably against CFG when accounting for this scaling different.  
+![alt text](img/TCFG.png)  
+![alt text](img/strawberries.png)  
