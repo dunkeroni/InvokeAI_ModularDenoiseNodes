@@ -30,3 +30,15 @@ Tangential Damping Classifier-free Guidance comes from this paper: https://arxiv
 It claims to prevent results from going off-manifold from an improper direction from the unconditional vs conditional noise prediction. When compared directly against CFG, it often makes results that look less contrasty and may have fewer artifacts. On careful analysis, however, it makes images that are identical to just using a lower CFG value and does not compare favorably against CFG when accounting for this scaling different.  
 ![alt text](img/TCFG.png)  
 ![alt text](img/strawberries.png)  
+
+## PLADIS - Break things in new and exciting ways
+PLADIS is a sparse attention mechanism that aguments the standard scaled dot product attention used in diffusion models. https://arxiv.org/abs/2503.07677  
+It effectively reduces the importance of prompt tags that are "noise" and enhances the effect of the key terms of the prompt. This mostly works for natural language models like Juggernaut, where the results are slightly sharper even if the hands get messed up a bit more.  
+![alt text](img/PLADIS_Juggernaut.png)  
+
+For tag-based models that already trigger harder on key terms, the result gets a bit mushy and weird extra objects appear, such as a second head that shows up in almost every result because "head" was in the prompt.  
+![alt text](img/PLADIS_Illustrious.png)  
+
+Pony and its finetunes are the worst offender for this, with a single reference to green eyes causing eyeballs all over the place in its outputs.  
+![alt text](img/PLADIS_Pony.png)  
+

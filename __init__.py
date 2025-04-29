@@ -10,6 +10,8 @@ from .noise_investigation import (
     ScheduledNoiseInvocation,
 )
 from .alt_CFG_extensions import TangentialDampingCFGExtensionInvocation
+from .sw_guidance_extension import SWGuidanceExtensionInvocation
+from .PLADIS_extension import PLADIS_ExtensionInvocation
 
 """
 Running with SageAttention requires installing to the vent or compiling from the submodule. 

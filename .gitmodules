@@ -1,3 +1,6 @@
 [submodule "SageAttention"]
 	path = SageAttention
 	url = https://github.com/thu-ml/SageAttention
+[submodule "entmax"]
+	path = entmax
+	url = https://github.com/deep-spin/entmax

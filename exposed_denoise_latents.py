@@ -22,6 +22,8 @@ from invokeai.backend.stable_diffusion.denoise_context import DenoiseContext, De
 
 from invokeai.backend.stable_diffusion.diffusion.custom_atttention import CustomAttnProcessor2_0
 from invokeai.backend.stable_diffusion.diffusion_backend import StableDiffusionBackend
+from diffusers.schedulers.scheduling_utils import SchedulerMixin, SchedulerOutput
+from invokeai.backend.stable_diffusion.diffusion.conditioning_data import ConditioningMode
 from invokeai.backend.stable_diffusion.extension_callback_type import ExtensionCallbackType
 from invokeai.backend.stable_diffusion.extensions.freeu import FreeUExt
 from invokeai.backend.stable_diffusion.extensions.inpaint import InpaintExt
@@ -66,6 +68,48 @@ class PreviewExtFIX(PreviewExt):
                 latents=ctx.latents,
             )
         )
+
+# standard backend doesn't skip negative when CFG is 1
+class QuickBackend (StableDiffusionBackend):
+    @torch.inference_mode()
+    def step(self, ctx: DenoiseContext, ext_manager: ExtensionsManager) -> SchedulerOutput:
+        ctx.latent_model_input = ctx.scheduler.scale_model_input(ctx.latents, ctx.timestep)
+
+        # TODO: conditionings as list(conditioning_data.to_unet_kwargs - ready)
+        # Note: The current handling of conditioning doesn't feel very future-proof.
+        # This might change in the future as new requirements come up, but for now,
+        # this is the rough plan.
+        guidance_scale = ctx.inputs.conditioning_data.guidance_scale
+        if isinstance(guidance_scale, list):
+            guidance_scale = guidance_scale[ctx.step_index]
+
+        if guidance_scale == 1.0:
+            ctx.positive_noise_pred = self.run_unet(ctx, ext_manager, ConditioningMode.Positive)
+            ctx.negative_noise_pred = torch.zeros_like(ctx.positive_noise_pred) #unused
+        elif self._sequential_guidance:
+            ctx.negative_noise_pred = self.run_unet(ctx, ext_manager, ConditioningMode.Negative)
+            ctx.positive_noise_pred = self.run_unet(ctx, ext_manager, ConditioningMode.Positive)
+        else:
+            both_noise_pred = self.run_unet(ctx, ext_manager, ConditioningMode.Both)
+            ctx.negative_noise_pred, ctx.positive_noise_pred = both_noise_pred.chunk(2)
+
+        # ext: override combine_noise_preds
+        ctx.noise_pred = self.combine_noise_preds(ctx)
+
+        # ext: cfg_rescale [modify_noise_prediction]
+        # TODO: rename
+        ext_manager.run_callback(ExtensionCallbackType.POST_COMBINE_NOISE_PREDS, ctx)
+
+        # compute the previous noisy sample x_t -> x_t-1
+        step_output = ctx.scheduler.step(ctx.noise_pred, ctx.timestep, ctx.latents, **ctx.inputs.scheduler_step_kwargs)
+
+        # clean up locals
+        ctx.latent_model_input = None
+        ctx.negative_noise_pred = None
+        ctx.positive_noise_pred = None
+        ctx.noise_pred = None
+
+        return step_output
 
 
 @invocation(
@@ -226,7 +270,7 @@ class ExposedDenoiseLatentsInvocation(DenoiseLatentsInvocation):
                 # ext: freeu, seamless, ip adapter, lora
                 ext_manager.patch_unet(unet, cached_weights),
             ):
-                sd_backend = StableDiffusionBackend(unet, scheduler)
+                sd_backend = QuickBackend(unet, scheduler)
                 denoise_ctx.unet = unet
                 denoise_ctx.sd_backend = sd_backend # required for forced calls from extensions. Can this be done another way?
                 result_latents = sd_backend.latents_from_embeddings(denoise_ctx, ext_manager)
